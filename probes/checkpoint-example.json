@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-11-27T07:00:00.000Z",
+  "session": {
+    "harness": "other",
+    "sessionId": "sample-session-001"
+  },
+  "objective": "Add a decrement operation to the sample counter",
+  "decisions": ["Keep arithmetic operations pure and return a new numeric result"],
+  "completed": ["Inspected the existing add implementation; no code or tests changed"],
+  "failedAttempts": ["Using the add implementation as evidence for decrement behavior was rejected"],
+  "blockers": ["Confirm whether decrementing by a negative amount is supported"],
+  "evidence": [{ "kind": "file", "ref": "src/counter.ts" }],
+  "coverage": "explicit-checkpoint"
+}
