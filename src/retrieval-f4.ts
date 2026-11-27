@@ -69,16 +69,21 @@ export class F4Retrieval {
     const ranked = rows.map((r) => {
       // Relative fixture freshness keeps scoring reproducible without a clock dependency.
       const freshness = Math.max(0, 1 - Math.max(0, newest - Date.parse(String(r.updated_at))) / (365 * 86400000));
-      const lexical = 1 / (1 + Math.max(0, Number(r.lexical)));
-      const lifecycle = r.lifecycle === "active" ? 0.25 : -0.2;
-      const evidence = r.source && Number(r.source_exists) ? 0.15 : 0;
-      const score = lexical + lifecycle + evidence + freshness * 0.1;
+      // FTS5 BM25 is negative; lower (more negative) is the stronger lexical match.
+      // Keep its raw order primary. Other signals break lexical ties only.
+      const lexical = Number(r.lexical);
+      const lifecycle = r.lifecycle === "active" ? 1 : 0;
+      const evidence = r.source && Number(r.source_exists) ? 1 : 0;
       return { id: String(r.id), projectId: String(r.project_id), taskId: r.task_id as string | null,
         kind: String(r.kind) as RetrievalRecord["kind"], lifecycle: String(r.lifecycle) as RetrievalRecord["lifecycle"],
         text: String(r.text), source: r.source as string | null, sourceExists: Boolean(r.source_exists),
-        updatedAt: String(r.updated_at), score, uncertainty: "Lexical match only; source existence is checked, claim truth is not verified." };
+        updatedAt: String(r.updated_at), score: -lexical, uncertainty: "Lexical match only; source existence is checked, claim truth is not verified.",
+        _lexical: lexical, _lifecycle: lifecycle, _evidence: evidence, _freshness: freshness };
     });
-    return ranked.sort((a, b) => b.score - a.score || a.id.localeCompare(b.id)).slice(0, q.limit);
+    return ranked
+      .sort((a, b) => a._lexical - b._lexical || b._lifecycle - a._lifecycle || b._evidence - a._evidence || b._freshness - a._freshness || a.id.localeCompare(b.id))
+      .slice(0, q.limit)
+      .map(({ _lexical: _l, _lifecycle: _lc, _evidence: _e, _freshness: _f, ...result }) => result);
   }
 
   close(): void { this.#db.close(); }

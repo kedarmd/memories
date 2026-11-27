@@ -8,11 +8,19 @@ function seeded(): F4Retrieval { const db = new F4Retrieval(); db.seed(records);
 test("F4 benchmark has deterministic, scoped, lifecycle-aware results", () => {
   const db = seeded();
   try {
+    let expectedAt3 = 0;
+    let expectedAt5 = 0;
+    let labeled = 0;
     for (const q of queries) {
       const { id: _id, expected, ...input } = q;
       const first = db.search({ ...input, limit: 5 });
       const second = db.search({ ...input, limit: 5 });
       assert.deepEqual(first.map((r) => r.id), second.map((r) => r.id), q.id);
+      if (expected.length > 0) {
+        labeled += expected.length;
+        expectedAt3 += expected.filter((id) => first.slice(0, 3).some((r) => r.id === id)).length;
+        expectedAt5 += expected.filter((id) => first.some((r) => r.id === id)).length;
+      }
       assert.deepEqual(first.filter((r) => r.projectId !== q.projectId || (r.taskId !== null && r.taskId !== q.taskId)), []);
       if (!("historical" in q && q.historical)) assert.ok(first.every((r) => r.lifecycle === "active"));
       assert.ok(first.every((r) => r.uncertainty.length > 0));
@@ -21,6 +29,9 @@ test("F4 benchmark has deterministic, scoped, lifecycle-aware results", () => {
     }
     assert.ok(db.search({ projectId:"proj-atlas", taskId:"task-cache", query:"no expiration", historical:true }).some((r) => r.id === "t1-old-ttl"));
     assert.equal(db.search({ projectId:"proj-atlas", taskId:"task-cache", query:"network retry" }).length, 0);
+    assert.equal(expectedAt3, 9);
+    assert.equal(expectedAt5, 10);
+    assert.equal(labeled, 11);
   } finally { db.close(); }
 });
 
@@ -47,5 +58,18 @@ test("F4 ties use stable ID ordering and returned records carry citation status 
     assert.deepEqual(result.map((r) => r.id), ["a", "z"]);
     assert.equal(result[0]?.sourceExists, false);
     assert.match(result[0]?.uncertainty ?? "", /not verified/);
+  } finally { db.close(); }
+});
+
+test("BM25 relevance ranks a stronger lexical match above an equally scoped and cited weaker match", () => {
+  const db = new F4Retrieval();
+  try {
+    db.seed([
+      { id:"weak",projectId:"p",taskId:"t",kind:"decision",lifecycle:"active",text:"cache notes mention unrelated behavior",source:"source#same",sourceExists:true,updatedAt:"2026-01-01T00:00:00.000Z" },
+      { id:"strong",projectId:"p",taskId:"t",kind:"decision",lifecycle:"active",text:"cache invalidation after account update succeeds",source:"source#same",sourceExists:true,updatedAt:"2026-01-01T00:00:00.000Z" },
+    ]);
+    const result = db.search({ projectId:"p",taskId:"t",query:"cache invalidation account update",limit:2 });
+    assert.deepEqual(result.map((r) => r.id), ["strong", "weak"]);
+    assert.ok(result[0]!.score > result[1]!.score);
   } finally { db.close(); }
 });
