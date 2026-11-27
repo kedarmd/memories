@@ -299,3 +299,90 @@ On the original F2 checkout, `npm test` passed (7 tests), `npm run check` passed
 Review reproduced that the original TERM path settled timeout, cancellation, and output-limit outcomes before the child had exited. Regression tests now use TERM-ignoring parent and descendant processes and assert that extraction does not settle until the POSIX process group closes. The tests also cover a detached descendant that holds inherited pipes open beyond the cleanup deadline; that case reports `CLEANUP_FAILED` rather than a timeout success/failure that implies cleanup completed. This follow-up changes only the F2 subprocess boundary and tests; it adds no durable worker or scheduler.
 
 Validation after the review correction: `npm test` passes (9 total tests: 8 extraction cases and the scaffold smoke test), `npm run check` passes, and `npm run build` passes. The subprocess lifecycle tests also pass directly with `node --experimental-strip-types --test tests/extraction.test.ts`. They cover timeout, cancellation, output limit, TERM-to-KILL escalation, group closure, and explicit bounded cleanup failure. Cross-platform process-tree termination remains unverified.
+
+## F3 — Cross-agent task continuation
+
+**Date:** 2026-11-27
+**Decision:** Bounded pass on Linux x86_64. A real Codex session partially implemented a synthetic feature, saved a structured checkpoint to SQLite, and ended. A separate OpenCode session explicitly loaded that task packet and completed the next testable feature step. It received the store-produced packet as an attachment; it did not receive Codex's native conversation history. This establishes feasibility for explicit checkpoint continuity in this experiment, not automatic capture or general continuation quality.
+
+### Environment and data handling
+
+- Host: Linux x86_64 (`7.3.5-arch1-1`); Node.js `v24.22.3`.
+- Codex CLI `0.172.0`: `--ephemeral --sandbox workspace-write --json`.
+- OpenCode `v2.4.1`: `--standalone --auto --format json --file <loaded-packet>`.
+- The synthetic repository came from `node probes/create-f3-fixture.mjs`; it contained a small label parser and one baseline test. No user source, private task data, or credentials were used. Providers received only synthetic task/checkpoint/fixture content. Provider/model identity was not captured in sanitized evidence.
+- Codex's native session was ephemeral. Its JSONL and final response were temporary files outside the fixture and deleted before OpenCode started. The SQLite database and checkpoint were also outside the fixture. OpenCode received the result of an explicit project/task `load` as an attachment. No Codex transcript was made available to it.
+- Checkpoint statements are attributed to Codex and source paths, not independently verified facts. The store reports `saved`, not extracted or verified.
+
+### Minimal boundary and observed continuation
+
+`src/continuation.ts` is a spike-only SQLite store with Zod validation. It records the exact project/task key, objective, session agent/workspace, explicit coverage, bounded progress/decisions/blockers/next steps, and source references. `save` commits before returning `saved`; identical retries are idempotent. `load(projectId, taskId)` returns only the requested scope with explicit limitations. Unknown tasks return no packet. It does not store native messages, verify source truth, or implement a production registry.
+
+This is direct checkpoint persistence and retrieval. The F2 headless extraction runner is not used as the active Codex session, persistence layer, or continuation manager; no extraction is claimed.
+
+`probes/continuation-store.ts` exposes `register`, `save`, and `load`; `save -` reads checkpoint JSON from stdin so the active agent can submit it directly. Automated tests cover close/reopen durability, duplicate retry, project/task isolation, unknown task, foreign-key rejection, partial coverage without evidence, and malformed input. `probes/assert-f3-save-before-handoff.mjs` verifies that Codex JSONL contains a successful `saved` receipt from a checkpoint-save command before `turn.completed`.
+
+In the follow-up run, the registered task objective was intentionally generic. The real Codex session implemented quoted-comma parsing and one focused test. Before its turn ended, it authored a structured checkpoint from the work it had just done and piped it into `save -`. The Codex tool event recorded receipt `8dc043674cf9d4e7fd6b085bf61922dca9e59f8614246f3f7bc6b78ddceeb90d`; the trace assertion found the save receipt at event index 19 and `turn.completed` at index 21. After Codex exited, a separate CLI process loaded the SQLite database and returned one checkpoint in a 2,002-byte packet. The Codex native session was ephemeral; its raw JSONL and final message were deleted before either OpenCode run. The checkpoint uses the explicit experiment alias `codex-f3-origin-01`, not a native Codex thread ID; the event trace ties the save command to the Codex turn that completed afterward.
+
+The checkpoint included a task-specific decision absent from both the registered objective and fixture: legacy labels beginning with `@` are opaque text and must be preserved exactly. It also recorded the unresolved doubled-quote blocker and next step. To test whether the loaded packet contributed information, I ran a no-packet control in a copy of the exact post-Codex fixture with the same neutral OpenCode prompt. That agent inferred quoted-field behavior from the source and tests, added general edge-case tests, and did not mention or test the `@` constraint. In the separate target run, OpenCode received the explicit `load` packet with the same neutral prompt. Before editing, it attributed the doubled-quote next step and the `@` preservation decision to the checkpoint; it then added a focused `@literal` regression alongside the escaped-quote test. Thus the no-packet control did not recover the distinguishing decision, while the loaded run stated and tested it. This supports a bounded causal contribution from the retrieved checkpoint; it does not prove the model could never guess the rule.
+
+The fixture suite passed 2/2 after Codex, 7/7 in the no-packet control copy, and 4/4 in the packet-loaded continuation. The target fixture changed only `src/labels.mjs` and `test/labels.test.mjs`. Reverse OpenCode → Codex continuation was not run.
+
+### Reproduction
+
+Requires Node.js 22+ with `node:sqlite`, Git, `jq`, both CLIs, and configured providers. Run at the repository root in a disposable environment. This records a checkpoint from within the live Codex session, verifies the saved receipt precedes turn completion, and compares a neutral OpenCode run with and without the loaded packet.
+
+```sh
+set -eu
+repo="$(git rev-parse --show-toplevel)"
+demo="$(node probes/create-f3-fixture.mjs)"
+evidence="$(mktemp -d /tmp/memories-f3.XXXXXX)"
+db="$evidence/continuation.sqlite"
+node --experimental-strip-types "$repo/probes/continuation-store.ts" register "$db" \
+  f3-label-parser-causal-demo task-f3-checkpoint-causal \
+  'Implement a comma-separated label parser in the disposable F3 fixture.'
+
+cd "$demo"
+codex exec --ignore-user-config --ephemeral --sandbox workspace-write \
+  --add-dir "$evidence" --json -C "$demo" -o "$evidence/codex-last.txt" \
+  "Implement quoted-comma parsing and one focused test in this fixture. Full behavior also requires preserving quoted whitespace, trimming unquoted values, decoding doubled quotes, preserving empty fields, and treating a leading @ as ordinary label text without normalization. Leave doubled-quote escaping unresolved. Do not commit. Before ending this same session, build a partial source-attributed checkpoint from the work and tests you actually performed. Save it to registered project f3-label-parser-causal-demo, task task-f3-checkpoint-causal by running: node --experimental-strip-types $repo/probes/continuation-store.ts save $db -. Send the JSON on stdin; use session id codex-f3-origin-01 and workspace disposable-git-fixture. Include the @ preservation decision, unresolved blocker, next step, and file references. Wait for and report the saved receipt before ending. Do not claim unperformed tests or work." \
+  > "$evidence/codex-events.jsonl"
+```
+
+The Codex prompt tells the active session to author JSON from its observed work and submit it on stdin; it does not use `probes/continuation-checkpoint.example.json`. `--add-dir` grants access to the external evidence directory. After Codex exits, assert the ordering and retrieve the durable record through a new CLI process:
+
+```sh
+cd "$repo"
+node probes/assert-f3-save-before-handoff.mjs "$evidence/codex-events.jsonl" \
+  > "$evidence/save-before-handoff.json"
+node --experimental-strip-types probes/continuation-store.ts load "$db" \
+  f3-label-parser-causal-demo task-f3-checkpoint-causal > "$evidence/load-packet.json"
+cat "$evidence/save-before-handoff.json"
+wc -c "$evidence/load-packet.json"
+```
+
+Delete the raw Codex JSONL and final response before either OpenCode run. Use this exact neutral request in both sessions; the control receives no packet, and the target receives the explicit `load` output as an attachment:
+
+```sh
+node -e 'const fs=require("node:fs"); for(const p of process.argv.slice(1)) fs.unlinkSync(p)' \
+  "$evidence/codex-events.jsonl" "$evidence/codex-last.txt"
+control="$evidence/no-packet-fixture"
+cp -a "$demo" "$control"
+open_prompt='Continue this task using the available context and the current workspace. Inspect the repository, decide what to do next, implement it, and run relevant tests. Before editing, briefly state the specific task requirement guiding your change and where that requirement came from. Do not consult or reconstruct prior conversation.'
+cd "$control"
+opencode run --standalone --auto --format json "$open_prompt" > "$evidence/no-packet.jsonl"
+npm test
+cd "$demo"
+opencode run --standalone --auto --format json --file "$evidence/load-packet.json" \
+  "$open_prompt" > "$evidence/loaded-packet.jsonl"
+npm test
+git diff --check
+```
+
+Review the two responses and diffs. In this run, the no-packet session relied on repository evidence and did not recover or test the opaque-`@` rule. The packet-loaded session attributed that rule and the next step to the checkpoint, then added a regression for the rule. The two fixture copies start from the same post-Codex files; raw OpenCode logs should remain local and be removed after recording sanitized results.
+
+### Validation and limits
+
+On this checkout, `npm test` passes (15 tests: 6 continuation-store, 8 extraction, 1 scaffold); `npm run check` and `npm run build` pass. The live feature tests passed 2/2 after Codex, 7/7 in the no-packet control, and 4/4 in the loaded-packet run; fixture `git diff --check` passed. The trace assertion reported `savedBeforeHandoff: true`, and the later process loaded one checkpoint from SQLite.
+
+This is not a production design. There was no reverse-direction run, native capture, automatic task association, source-claim verification, crash test beyond database close/reopen, FTS/search, or production migration. The built-in `node:sqlite` implementation was verified only on this Linux host. The checkpoint session ID is an experiment alias, not the harness-native thread ID; event-order evidence links the save to the originating Codex turn. A no-packet agent may still independently discover implementation work; this control specifically failed to surface the checkpoint-only `@` rule. Agent wording/diffs can vary. No architecture amendment is proposed; F4 should measure retrieval beyond exact project/task loading.

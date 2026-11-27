@@ -1,0 +1,31 @@
+{
+  "projectId": "f3-label-parser-demo",
+  "taskId": "task-label-parser-001",
+  "session": {
+    "id": "replace-with-codex-session-id",
+    "agent": "codex",
+    "workspace": "disposable-git-fixture"
+  },
+  "objective": "Complete a comma-separated label parser with quoted commas, preserved quoted content, trimmed unquoted values, doubled-quote escaping, and meaningful empty fields.",
+  "completed": [
+    "Codex added quoted-comma parsing and a focused test.",
+    "Codex reported direct checks for empty fields, empty input, empty quoted input, and non-string input."
+  ],
+  "decisions": [
+    "A comma inside a quoted label is data, not a delimiter.",
+    "Quoted whitespace is preserved; unquoted surrounding whitespace is trimmed.",
+    "Empty fields are meaningful and must not be filtered out."
+  ],
+  "blockers": [
+    "Doubled quotes inside quoted fields are not yet decoded as one literal quote."
+  ],
+  "next": [
+    "Implement doubled-quote escaping with a focused regression test; preserve quoted commas and empty fields."
+  ],
+  "evidence": [
+    { "kind": "file", "ref": "src/labels.mjs" },
+    { "kind": "file", "ref": "test/labels.test.mjs" }
+  ],
+  "coverage": "partial",
+  "createdAt": "2026-11-27T13:00:00.000Z"
+}
