@@ -1,6 +1,6 @@
 # Memories — V1 Technical Architecture
 
-**Status:** Conditional V1 architecture recommendation; owner decision recorded in [FEASIBILITY_DECISION.md](FEASIBILITY_DECISION.md). This is not implementation authorization.
+**Status:** Conditional V1 architecture recommendation awaiting the owner's decision in [FEASIBILITY_DECISION.md](FEASIBILITY_DECISION.md). This is not implementation authorization.
 **Guiding rule:** Agent-agnostic core; harness integration at the edges.
 
 ## 1. Shape of the application
@@ -132,7 +132,7 @@ Separate vector database; embedding service/model distribution; graph DB; intera
 
 ## 11. Conditional acceptance gates and remaining uncertainties
 
-The first V1 slice is the explicit task-create/associate, durable checkpoint update, and source-linked load path over CLI and real MCP. Owner approval of F6 and a separate issue is required before implementation. Do not include automatic capture, AI extraction, UI, refresh, or embeddings in that first slice.
+The proposed V1 sequence is staged: (1) minimal migration-backed persistence, stable project/task identifiers, and a scoped CLI contract; (2) real MCP protocol and shared-core validation against that persistence foundation; (3) explicit task association, durable attributed checkpoints, and source-linked cross-agent loading. Each stage requires its own owner-approved issue after the preceding stage is merged and accepted. F6 remains a recommendation pending owner decision. Do not include automatic capture, AI extraction, UI, refresh, or embeddings in these initial stages.
 
 Before enabling real extraction, validate read-only enforcement, timeout/process cleanup, recursion prevention, at-least-once side-effect recovery, redaction/retention, and provider disclosure/consent. Keep Linux as the only evidenced platform until other platform suites pass. Maintain conservative empty/weak FTS5 results; use a larger labeled corpus with zero-overlap paraphrases and broad-query precision before considering semantic infrastructure. See [FEASIBILITY_DECISION.md](FEASIBILITY_DECISION.md) for gates, risks, and no-go triggers.
 

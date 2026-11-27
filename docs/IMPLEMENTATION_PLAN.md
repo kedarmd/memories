@@ -72,8 +72,13 @@ The ordering is a working hypothesis, **not a frozen implementation specificatio
 
 ### M1 — Core continuity (reordered by F6 recommendation; provisional)
 
-- **First slice — continuity contract and real client proof:** establish the user-level data root and shared core; expose the minimum explicit task-create/associate, durable attributed checkpoint update, and source-linked load operations to CLI and real MCP clients. Prove two MCP clients plus CLI share one core, with multi-project/task isolation, protocol lifecycle/error behavior, and restart durability. Keep one reviewable issue; do not create it until F6 is accepted.
-- **Next, only after first-slice review:** complete the Drizzle schema/migrations and stable project/workspace registry needed by observed workflow; harden idempotency, provenance, lifecycle/freshness, and scoped SQL/FTS5 retrieval against labeled quality gates. Split into separate issues only when reviewably independent and approved serially.
+The proposal is **three strictly sequential stages**, not a pre-approved batch of issues. Create and approve only the next issue after the prior stage's PR is merged and accepted. Each stage must be reviewable on its own; no stage authorizes the next one.
+
+1. **Persistence foundation and scoped CLI contract.** Add only the minimal Drizzle-owned SQLite schema and migrations for stable project/task identity and durable checkpoint records, plus the scoped CLI operations needed to exercise those records. Acceptance: fresh install and migration upgrade/reopen preserve IDs and checkpoint attribution; uniqueness/foreign-key constraints and negative scope tests pass; CLI operations cannot read or write another project/task's records. This is the prerequisite for every workflow that claims durability.
+2. **Real MCP and shared-core protocol proof.** On the accepted storage foundation, add the actual MCP server/client contract and verify two independent MCP clients plus CLI reuse one user-level core. Acceptance: real protocol discovery and requests, protocol errors/cancellation/lifecycle, and restart/reconnection behavior are exercised against that core. Keep this stage limited to proving transport and shared-core behavior; task/checkpoint workflow acceptance belongs to Stage 3. This places MCP validation immediately after the persistence foundation, not in late packaging/UI work.
+3. **Explicit cross-agent continuity.** Use the Stage 1 records and Stage 2 MCP contract for explicit task create/association, durable attributed checkpoint update, and source-linked load. Acceptance: a non-sensitive task can be checkpointed through one client and loaded through another; `saved` is reported only after commit; source status and task/project scope are explicit; multi-project/task negative tests show no leakage. No AI extraction or automatic capture is required.
+
+Only after Stage 3 review should separately approved work expand retrieval quality, job execution, capture, refresh, or UI. Minimal production migrations and stable identifiers are part of Stage 1, not postponed schema polish. The stages above are proposals pending the owner's F6 decision; do not create their issues as part of F6.
 
 ### M2 — Capture and knowledge maintenance (provisional; gated on continuity)
 
@@ -88,7 +93,7 @@ The ordering is a working hypothesis, **not a frozen implementation specificatio
 - **M3.2** React/Vite project/task/checkpoint explorer and read-only documentation browser with FTS5 search.
 - **M3.3** Memory-only temporary chat, developer conflict review UI, and integrated release validation.
 
-Expect to revise these candidate chunks after the feasibility gate and first-slice evidence. The final V1 must validate cross-project isolation, concurrent sessions, privacy boundaries, failures, and real cross-agent continuation. Real MCP interoperability is brought forward into the first slice rather than deferred to late packaging. These are acceptance gates across tasks, not optional cleanup.
+Expect to revise these candidate chunks after the feasibility gate and evidence from the three M1 stages. The final V1 must validate cross-project isolation, concurrent sessions, privacy boundaries, failures, and real cross-agent continuation. Real MCP interoperability is the second sequential stage, directly after migration-backed persistence, rather than deferred to late packaging. These are acceptance gates across tasks, not optional cleanup.
 
 ## 6. Scope boundaries
 

@@ -93,25 +93,39 @@ Likelihood and impact are qualitative planning estimates, not measured frequenci
 
 ## Minimum V1 gates
 
-No production implementation starts until the owner explicitly accepts this decision and separately approves a single first-slice issue. The slice is limited to the deterministic continuity path and its real client contract.
+No production implementation starts until the owner explicitly records the final F6 decision and separately approves Stage 1. Approve only one stage issue at a time; later stages require the previous stage's PR to be merged and accepted.
 
 1. **Topology and protocol:** one user-level data root and one knowledge DB; two independent real MCP clients and one CLI client share one core; discovery, request, error, cancellation, and shutdown behavior are tested.
 2. **Scope and durability:** two registered projects and multiple tasks; every read/write/job is explicitly scoped; negative tests show no cross-project/task result or job access; checkpoint attribution and durable receipt survive core restart.
-3. **Status truthfulness:** the first slice reports a persisted checkpoint as `saved`. It has no extraction path and therefore must not report `queued` or extraction completion. A later extraction milestone must report `queued` only after durable job acceptance; invalid output, unsupported references, and failures remain visible and cannot be promoted silently.
+3. **Status truthfulness:** Stage 1 and Stage 3 report a persisted checkpoint as `saved`. The initial stages have no extraction path and therefore must not report `queued` or extraction completion. A later extraction milestone must report `queued` only after durable job acceptance; invalid output, unsupported references, and failures remain visible and cannot be promoted silently.
 4. **Continuity utility:** on a real, non-sensitive task, one harness saves a checkpoint and a second independent client loads it; source references resolve and the next step is attributable. This is a workflow acceptance check, not a claim of universal transfer quality.
 5. **Retrieval quality:** labeled corpus includes direct and zero-overlap paraphrase queries, broad OR queries, cross-scope negatives, lifecycle cases, and citation support. Thresholds and minimum acceptable precision are owner-approved before the benchmark; weak/empty cases remain conservative.
 6. **Execution and privacy:** before enabling real extraction, prove read-only enforcement, timeout/process-group cleanup, recursion prevention, crash/retry semantics, redaction and retention behavior, and provider disclosure/consent. Fake-worker F5 evidence cannot satisfy this gate.
 7. **Platform claims:** Linux-only claims are explicit until macOS/Windows suites pass. No multi-platform promise based on Node portability alone.
 
-## Annotated first implementation slice (proposal only)
+## Proposed sequential V1 implementation stages
 
-**Outcome:** a developer can create/associate a task, durably save an attributed checkpoint, and explicitly load bounded, source-linked task/project context through CLI and real MCP clients sharing the V1 user-level core.
+These are candidate boundaries for discussion after the owner's F6 decision, not approved or created issues. Work is strictly serial: the owner approves only Stage 1 after accepting F6; Stage 2 cannot start until Stage 1 is merged and accepted; Stage 3 cannot start until Stage 2 is merged and accepted. F6 itself creates no V1 issues.
 
-**Prerequisites:** owner accepts the F6 recommendation; owner approves a separate issue; the issue freezes the initial status/provenance contract and the real MCP test harness; data-root permissions and Linux-only initial validation are stated. The issue must not bundle UI, automatic capture, AI extraction, refresh, embeddings, or broad packaging.
+### Stage 1 — Migration-backed persistence and scoped CLI
 
-**Observable acceptance:** two independent MCP clients and CLI reach one core; operations persist/reload across restart; two-project/task isolation tests pass; persisted checkpoints report `saved` and this extraction-free slice makes no `queued` or completion claim; unsupported source references are marked and never described as verified; a second client can load a useful checkpoint from a real non-sensitive fixture task; exact commands, versions, results, and limitations are recorded in the PR.
+**Outcome:** the smallest durable storage foundation needed by later work: Drizzle-owned SQLite migrations; stable project/task IDs and scope constraints; checkpoint persistence with provenance; and a CLI contract that exercises these records.
 
-This is a candidate boundary for review, not an implementation issue or authorization. No V1 issue is created by F6.
+**Acceptance:** clean database creation and migration upgrade/reopen tests preserve stable IDs, checkpoint attribution, and scope; constraints reject duplicate/invalid relationships; negative tests show project/task isolation; a saved receipt is returned only after durable commit. This stage does not implement MCP, extraction, semantic retrieval, UI, or automatic capture.
+
+### Stage 2 — Real MCP and shared-core protocol proof
+
+**Outcome:** actual MCP interoperability is proven early on top of Stage 1, before the task-continuity workflow expands.
+
+**Acceptance:** two independent real MCP clients and a CLI client connect through one user-level on-demand core; protocol discovery, requests, errors, cancellation/lifecycle, reconnection, and restart behavior are exercised. Keep workflow scope to the minimum needed to prove the protocol and shared-core behavior; do not claim continuity acceptance yet. F5's JSON IPC alone cannot satisfy this gate.
+
+### Stage 3 — Explicit cross-agent continuity
+
+**Outcome:** explicit task create/association, attributed durable checkpoint update, and source-linked task/project load work across the CLI and proven MCP clients.
+
+**Acceptance:** a non-sensitive fixture task is saved through one client and loaded through another after restart; project/task scope is enforced with negative cases; sources are reported with their support status; checkpoint status is `saved` only after commit, and this extraction-free stage does not report `queued` or completed extraction. Record the tested harness/client versions, commands, results, and remaining limits.
+
+Each stage needs a separate owner-approved issue and review PR. Keep capture, AI extraction, refresh, embeddings, UI, and broad packaging out of these three initial stages. This sequence is a proposal pending the owner's final GO / CONDITIONAL GO / NO-GO decision.
 
 ## No-go triggers and remaining unknowns
 
