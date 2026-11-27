@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcessByStdio } from 'node:child_process';
+import type { Readable } from 'node:stream';
 import { Effect } from 'effect';
 import { z } from 'zod';
 
@@ -61,7 +62,7 @@ export type ExtractionResult = {
 };
 
 export class ExtractionError extends Error {
-  readonly code: 'INVALID_INPUT' | 'UNAVAILABLE' | 'NONZERO_EXIT' | 'TIMEOUT' | 'CANCELLED' | 'OUTPUT_LIMIT' | 'INVALID_OUTPUT' | 'UNSUPPORTED_EVIDENCE';
+  readonly code: 'INVALID_INPUT' | 'UNAVAILABLE' | 'NONZERO_EXIT' | 'TIMEOUT' | 'OUTPUT_LIMIT' | 'INVALID_OUTPUT' | 'UNSUPPORTED_EVIDENCE' | 'CLEANUP_FAILED';
 
   constructor(code: ExtractionError['code'], message: string) {
     super(message);
@@ -107,63 +108,119 @@ function parseAgentJson(stdout: string): unknown {
   }
 }
 
-function runProcess(config: ExecutorConfig, prompt: string, signal: AbortSignal): Promise<string> {
+function runProcess(config: ExecutorConfig, prompt: string): Effect.Effect<string, ExtractionError> {
   const timeoutMs = config.timeoutMs ?? 60_000;
   const maxOutputBytes = config.maxOutputBytes ?? MAX_OUTPUT_BYTES;
-  return new Promise((resolve, reject) => {
-    let child;
+  return Effect.async<string, ExtractionError>((resume, signal) => {
+    let child: ChildProcessByStdio<null, Readable, Readable>;
     try {
       child = spawn(config.command, [...(config.args ?? []), prompt], {
         cwd: config.cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
+        detached: process.platform !== 'win32',
       });
     } catch {
-      reject(new ExtractionError('UNAVAILABLE', `could not launch executor: ${config.command}`));
+      resume(Effect.fail(new ExtractionError('UNAVAILABLE', `could not launch executor: ${config.command}`)));
       return;
     }
     let stdout = '';
     let outputBytes = 0;
-    let settled = false;
-    let stopping = false;
-    const settle = (error?: ExtractionError) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      signal.removeEventListener('abort', onAbort);
-      if (error) reject(error);
-      else resolve(stdout);
+    let state: 'running' | 'terminating' | 'settled' = 'running';
+    let closed = false;
+    let termination: Promise<void> | undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let resolveClose!: () => void;
+    const closePromise = new Promise<void>((resolve) => { resolveClose = resolve; });
+    const clearExecutionTimeout = () => {
+      if (timeout !== undefined) clearTimeout(timeout);
     };
-    const stop = () => {
-      if (stopping) return;
-      stopping = true;
-      child.kill('SIGTERM');
-      const forceKill = setTimeout(() => child.kill('SIGKILL'), 500);
-      forceKill.unref();
+    const sendSignal = (name: NodeJS.Signals) => {
+      if (child.pid === undefined) return;
+      try {
+        if (process.platform === 'win32') child.kill(name);
+        else process.kill(-child.pid, name);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+      }
     };
-    const onAbort = () => { stop(); settle(new ExtractionError('CANCELLED', 'extraction was cancelled')); };
-    const timer = setTimeout(() => { stop(); settle(new ExtractionError('TIMEOUT', `executor exceeded ${timeoutMs}ms`)); }, timeoutMs);
-    timer.unref();
-    signal.addEventListener('abort', onAbort, { once: true });
-    child.on('error', () => settle(new ExtractionError('UNAVAILABLE', `could not launch executor: ${config.command}`)));
-    child.stdout.on('data', (chunk: Buffer) => {
-      outputBytes += chunk.byteLength;
-      if (outputBytes > maxOutputBytes) {
-        stop();
-        settle(new ExtractionError('OUTPUT_LIMIT', `executor output exceeded ${maxOutputBytes} bytes`));
-      } else stdout += chunk.toString('utf8');
-    });
-    child.stderr.on('data', (chunk: Buffer) => {
-      outputBytes += chunk.byteLength;
-      if (outputBytes > maxOutputBytes) {
-        stop();
-        settle(new ExtractionError('OUTPUT_LIMIT', `executor output exceeded ${maxOutputBytes} bytes`));
+    const waitForClose = async (milliseconds: number): Promise<boolean> => {
+      if (closed) return true;
+      return new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(false), milliseconds);
+        closePromise.then(() => {
+          clearTimeout(timer);
+          resolve(true);
+        });
+      });
+    };
+    const terminateAndWait = (): Promise<void> => {
+      if (termination) return termination;
+      if (closed) return Promise.resolve();
+      state = 'terminating';
+      clearExecutionTimeout();
+      termination = (async () => {
+        try {
+          sendSignal('SIGTERM');
+        } catch {
+          // Continue to the bounded SIGKILL attempt before reporting cleanup failure.
+        }
+        if (await waitForClose(500)) return;
+        try {
+          sendSignal('SIGKILL');
+        } catch {
+          // The close wait below determines whether termination actually completed.
+        }
+        if (await waitForClose(2_000)) return;
+        throw new ExtractionError('CLEANUP_FAILED', 'executor process group did not close after SIGKILL within 2000ms');
+      })();
+      return termination;
+    };
+    const settle = (effect: Effect.Effect<string, ExtractionError>) => {
+      if (state === 'settled') return;
+      state = 'settled';
+      clearExecutionTimeout();
+      resume(effect);
+    };
+    const failAfterTermination = (reason: ExtractionError) => {
+      if (state !== 'running') return;
+      void terminateAndWait().then(
+        () => settle(Effect.fail(reason)),
+        (error: unknown) => settle(Effect.fail(error instanceof ExtractionError ? error : new ExtractionError('CLEANUP_FAILED', 'executor cleanup failed'))),
+      );
+    };
+    child.on('error', () => {
+      if (child.pid === undefined && state === 'running') {
+        settle(Effect.fail(new ExtractionError('UNAVAILABLE', `could not launch executor: ${config.command}`)));
       }
     });
-    child.on('close', (code: number | null) => {
-      if (code !== 0) settle(new ExtractionError('NONZERO_EXIT', `executor exited with status ${String(code)}`));
-      else settle();
+    child.stdout.on('data', (chunk: Buffer) => {
+      if (state !== 'running') return;
+      outputBytes += chunk.byteLength;
+      if (outputBytes > maxOutputBytes) failAfterTermination(new ExtractionError('OUTPUT_LIMIT', `executor output exceeded ${maxOutputBytes} bytes`));
+      else stdout += chunk.toString('utf8');
     });
-    if (signal.aborted) onAbort();
+    child.stderr.on('data', (chunk: Buffer) => {
+      if (state !== 'running') return;
+      outputBytes += chunk.byteLength;
+      if (outputBytes > maxOutputBytes) failAfterTermination(new ExtractionError('OUTPUT_LIMIT', `executor output exceeded ${maxOutputBytes} bytes`));
+    });
+    child.on('close', (code: number | null) => {
+      closed = true;
+      resolveClose();
+      if (state !== 'running') return;
+      if (code !== 0) settle(Effect.fail(new ExtractionError('NONZERO_EXIT', `executor exited with status ${String(code)}`)));
+      else settle(Effect.succeed(stdout));
+    });
+    timeout = setTimeout(() => failAfterTermination(new ExtractionError('TIMEOUT', `executor exceeded ${timeoutMs}ms`)), timeoutMs);
+    signal.addEventListener('abort', () => { clearExecutionTimeout(); }, { once: true });
+    if (signal.aborted) clearExecutionTimeout();
+
+    // Effect waits for this finalizer on interruption; rejection becomes a
+    // defect instead of a false claim that the subprocess was cleaned up.
+    return Effect.promise(async () => {
+      clearExecutionTimeout();
+      if (state !== 'settled') await terminateAndWait();
+    });
   });
 }
 
@@ -180,10 +237,7 @@ export function extractCheckpoint(rawInput: unknown, config: ExecutorConfig): Ef
       return Effect.fail(new ExtractionError('INVALID_INPUT', `checkpoint input exceeded ${MAX_INPUT_BYTES} bytes`));
     }
     const idempotencyKey = stableKey(input);
-    return Effect.tryPromise({
-      try: (signal) => runProcess(validatedConfig, promptFor(input, idempotencyKey), signal),
-      catch: (error) => error instanceof ExtractionError ? error : new ExtractionError('UNAVAILABLE', 'executor failed unexpectedly'),
-    }).pipe(Effect.flatMap((stdout) => Effect.try({
+    return runProcess(validatedConfig, promptFor(input, idempotencyKey)).pipe(Effect.flatMap((stdout) => Effect.try({
       try: () => {
         const parsed = MemoryProposalSchema.parse(parseAgentJson(stdout));
         for (const proposal of parsed.proposals) {

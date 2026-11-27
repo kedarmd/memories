@@ -42,6 +42,56 @@ async function rejectedCode(effect: ReturnType<typeof extractCheckpoint>): Promi
   return result.left.code;
 }
 
+async function waitForPids(dir: string, names: string[]): Promise<number[]> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      return await Promise.all(names.map(async (name) => Number(await readFile(join(dir, name), 'utf8'))));
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  assert.fail(`child pid files were not written: ${names.join(', ')}`);
+}
+
+function pidIsAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    throw error;
+  }
+}
+
+async function assertPidsExited(pids: number[]): Promise<void> {
+  assert.deepEqual(pids.map(pidIsAlive), pids.map(() => false), 'executor process group must be gone before extraction settles');
+}
+
+async function forceCleanup(pids: number[]): Promise<void> {
+  for (const pid of pids) {
+    try { process.kill(pid, 'SIGKILL'); } catch { /* already exited */ }
+  }
+}
+
+function parentAndGrandchildScript(dir: string, outputLimit = false, detachGrandchild = false): string {
+  const grandchild = `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(join(dir, 'grandchild.pid'))}, String(process.pid)); process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);`;
+  return [
+    "import { writeFileSync } from 'node:fs';",
+    "import { spawn } from 'node:child_process';",
+    `writeFileSync(${JSON.stringify(join(dir, 'parent.pid'))}, String(process.pid));`,
+    "process.on('SIGTERM', () => {});",
+    `spawn(process.execPath, ['--input-type=module', '-e', ${JSON.stringify(grandchild)}], { stdio: 'inherit', detached: ${detachGrandchild} });`,
+    outputLimit ? "setTimeout(() => process.stdout.write('x'.repeat(1024)), 100);" : '',
+    'setInterval(() => {}, 1000);',
+  ].filter(Boolean).join('\n');
+}
+
+async function readPids(dir: string): Promise<number[]> {
+  const pids: number[] = [];
+  for (const name of ['parent.pid', 'grandchild.pid']) {
+    try { pids.push(Number(await readFile(join(dir, name), 'utf8'))); } catch { /* child may not have started */ }
+  }
+  return pids;
+}
+
 test('validates the bounded input before starting a process', async () => {
   assert.equal(await rejectedCode(extractCheckpoint({ ...input, ignored: true }, command('process.exit(0)'))), 'INVALID_INPUT');
   assert.equal(await rejectedCode(extractCheckpoint({ ...input, checkpoint: 'x'.repeat(8_001) }, command('process.exit(0)'))), 'INVALID_INPUT');
@@ -74,32 +124,72 @@ test('reports malformed output, missing CLI, and nonzero exit distinctly', async
   assert.equal(await rejectedCode(extractCheckpoint(input, command('process.exit(7)'))), 'NONZERO_EXIT');
 });
 
-test('terminates an executor at timeout and caps combined stdout/stderr', async () => {
-  assert.equal(await rejectedCode(extractCheckpoint(input, command('setTimeout(() => {}, 10000)', { timeoutMs: 30 }))), 'TIMEOUT');
-  assert.equal(await rejectedCode(extractCheckpoint(input, command("process.stderr.write('x'.repeat(1000))", { maxOutputBytes: 128 }))), 'OUTPUT_LIMIT');
+test('timeout waits for a TERM-ignoring executor and its descendant to exit', { skip: process.platform === 'win32' }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'memories-timeout-'));
+  let pids: number[] = [];
+  try {
+    const effect = extractCheckpoint(input, command(parentAndGrandchildScript(dir), { cwd: dir, timeoutMs: 300 }));
+    const running = Effect.runPromise(Effect.either(effect));
+    pids = await waitForPids(dir, ['parent.pid', 'grandchild.pid']);
+    const result = await running;
+    assert.equal(result._tag, 'Left');
+    if (result._tag === 'Left') assert.equal(result.left.code, 'TIMEOUT');
+    await assertPidsExited(pids);
+  } finally {
+    await forceCleanup(pids.length > 0 ? pids : await readPids(dir));
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
-test('reports caller cancellation and terminates the child process', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'memories-extraction-'));
-  const pidFile = join(dir, 'child.pid');
-  const controller = new AbortController();
+test('output limit waits for a TERM-ignoring executor and its descendant to exit', { skip: process.platform === 'win32' }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'memories-output-limit-'));
+  let pids: number[] = [];
   try {
-    const config = command("import { writeFileSync } from 'node:fs'; writeFileSync('child.pid', String(process.pid)); setTimeout(() => {}, 10000)", { cwd: dir });
+    const effect = extractCheckpoint(input, command(parentAndGrandchildScript(dir, true), { cwd: dir, maxOutputBytes: 128 }));
+    const running = Effect.runPromise(Effect.either(effect));
+    pids = await waitForPids(dir, ['parent.pid', 'grandchild.pid']);
+    const result = await running;
+    assert.equal(result._tag, 'Left');
+    if (result._tag === 'Left') assert.equal(result.left.code, 'OUTPUT_LIMIT');
+    await assertPidsExited(pids);
+    assert.equal(await rejectedCode(extractCheckpoint(input, command("process.stderr.write('x'.repeat(1000))", { maxOutputBytes: 128 }))), 'OUTPUT_LIMIT');
+  } finally {
+    await forceCleanup(pids.length > 0 ? pids : await readPids(dir));
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('reports bounded cleanup failure when a detached descendant keeps output pipes open', { skip: process.platform === 'win32' }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'memories-cleanup-failure-'));
+  let pids: number[] = [];
+  try {
+    const effect = extractCheckpoint(input, command(parentAndGrandchildScript(dir, false, true), { cwd: dir, timeoutMs: 300 }));
+    const running = Effect.runPromise(Effect.either(effect));
+    pids = await waitForPids(dir, ['parent.pid', 'grandchild.pid']);
+    const result = await running;
+    assert.equal(result._tag, 'Left');
+    if (result._tag === 'Left') assert.equal(result.left.code, 'CLEANUP_FAILED');
+    assert.equal(pidIsAlive(pids[0]!), false, 'executor in the owned process group should have exited');
+    assert.equal(pidIsAlive(pids[1]!), true, 'bounded cleanup failure must not report the detached descendant as cleaned');
+  } finally {
+    await forceCleanup(pids.length > 0 ? pids : await readPids(dir));
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('cancellation waits for a TERM-ignoring executor and its descendant to exit', { skip: process.platform === 'win32' }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'memories-extraction-'));
+  const controller = new AbortController();
+  let pids: number[] = [];
+  try {
+    const config = command(parentAndGrandchildScript(dir), { cwd: dir });
     const running = Effect.runPromise(extractCheckpoint(input, config), { signal: controller.signal });
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      try { await readFile(pidFile, 'utf8'); break; } catch { await new Promise((resolve) => setTimeout(resolve, 10)); }
-    }
-    const pid = Number(await readFile(pidFile, 'utf8'));
-    assert.ok(Number.isInteger(pid) && pid > 0);
+    pids = await waitForPids(dir, ['parent.pid', 'grandchild.pid']);
     controller.abort();
     await assert.rejects(running, /interrupted/i);
-    let terminated = false;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      try { process.kill(pid, 0); await new Promise((resolve) => setTimeout(resolve, 10)); }
-      catch { terminated = true; break; }
-    }
-    assert.equal(terminated, true, 'cancelled executor child should be terminated');
+    await assertPidsExited(pids);
   } finally {
+    await forceCleanup(pids.length > 0 ? pids : await readPids(dir));
     await rm(dir, { recursive: true, force: true });
   }
 });
