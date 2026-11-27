@@ -124,11 +124,12 @@ async function startCore(rootArg: string, idleMs: number, events: string): Promi
           respond({ ok: true, pid: process.pid, instanceId, clients, active, jobs }); break;
         }
         case 'submit': {
-          const id = createHash('sha256').update(req.idempotencyKey).digest('hex');
+          const scopedIdempotencyKey = JSON.stringify([req.projectId, req.taskId, req.idempotencyKey]);
+          const id = createHash('sha256').update(`f5-job\0${scopedIdempotencyKey}`).digest('hex');
           const now = new Date().toISOString();
           const inserted = db.prepare("INSERT OR IGNORE INTO f5_jobs(id, idem, project_id, task_id, input, duration_ms, fail, state, created_at, updated_at) VALUES(?,?,?,?,?,?,?,'queued',?,?)")
-            .run(id, req.idempotencyKey, req.projectId, req.taskId, req.input, req.durationMs, Number(req.fail), now, now);
-          const job = db.prepare('SELECT id, project_id as projectId, task_id as taskId, input, state FROM f5_jobs WHERE idem=?').get(req.idempotencyKey);
+            .run(id, scopedIdempotencyKey, req.projectId, req.taskId, req.input, req.durationMs, Number(req.fail), now, now);
+          const job = db.prepare('SELECT id, project_id as projectId, task_id as taskId, input, state FROM f5_jobs WHERE idem=?').get(scopedIdempotencyKey);
           respond({ ok: true, job, duplicate: inserted.changes === 0 });
           void worker();
           break;

@@ -139,6 +139,18 @@ test('independent clients share one on-demand core, serialize jobs, serve reads,
   assert.equal(dup.job.input, 'distinguishable input alpha', 'first payload remains durable for a duplicate key');
   assert.notEqual(jobA.job.id, jobB.job.id);
 
+  const otherScope = { projectId: 'project-other', taskId: 'task-other' };
+  const otherScopeSubmission = await client(root, { op: 'submit', idempotencyKey: 'job-A', ...otherScope, input: 'scope-B unique input', durationMs: 0, fail: false }, idleMs, eventsFile);
+  assert.equal(otherScopeSubmission.duplicate, false, 'the same caller key in another scope creates an independent job');
+  assert.notEqual(otherScopeSubmission.job.id, jobA.job.id);
+  assert.deepEqual([otherScopeSubmission.job.projectId, otherScopeSubmission.job.taskId, otherScopeSubmission.job.input], ['project-other', 'task-other', 'scope-B unique input']);
+  const otherScopeRetry = await client(root, { op: 'submit', idempotencyKey: 'job-A', ...otherScope, input: 'later scope-B payload', durationMs: 0, fail: false }, idleMs, eventsFile);
+  assert.equal(otherScopeRetry.duplicate, true, 'same-scope retry remains idempotent in the second scope');
+  assert.equal(otherScopeRetry.job.id, otherScopeSubmission.job.id);
+  assert.equal(otherScopeRetry.job.input, 'scope-B unique input');
+  const crossScopeLookup = await client(root, { op: 'job', id: jobA.job.id, ...otherScope }, idleMs, eventsFile);
+  assert.equal(crossScopeLookup.job, null, 'scoped lookup does not reveal another task job');
+
   const scope = { projectId: 'project-synthetic', taskId: 'task-synthetic' };
   const running = await waitFor(() => client(root, { op: 'status', ...scope }, idleMs, eventsFile), (r) => r.jobs.some((j: Json) => j.state === 'running'));
   const startedAt = Date.now();
@@ -176,7 +188,7 @@ test('independent clients share one on-demand core, serialize jobs, serve reads,
     maxActive = Math.max(maxActive, active);
   }
   assert.equal(maxActive, 1);
-  assert.deepEqual(new Set(jobEvents.filter((e) => e.type === 'executor_start').map((e) => e.input)), new Set(['distinguishable input alpha', 'distinguishable input beta']));
+  assert.deepEqual(new Set(jobEvents.filter((e) => e.type === 'executor_start').map((e) => e.input)), new Set(['distinguishable input alpha', 'distinguishable input beta', 'scope-B unique input']));
 
   // A deterministic executor failure remains visibly failed and does not block the next queue item.
   const failed = await client(root, { op: 'submit', idempotencyKey: 'job-failure', projectId: 'project-synthetic', taskId: 'task-synthetic', input: 'synthetic failing job', durationMs: 80, fail: true }, idleMs, eventsFile);
