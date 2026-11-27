@@ -10,6 +10,7 @@
   "scripts": {
     "check": "tsc --noEmit",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "spike:f5": "node --experimental-strip-types --test-reporter=spec --test tests/runtime-f5.test.ts",
     "build": "tsc --project tsconfig.build.json"
   },
   "dependencies": {
