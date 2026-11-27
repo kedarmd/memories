@@ -1,5 +1,7 @@
 # Feasibility Spike Results — F1 Session Capture
 
+> F1–F5 are historical bounded experiments. Their results and limitations are preserved here. The consolidated architecture recommendation and acceptance gates are in [FEASIBILITY_DECISION.md](FEASIBILITY_DECISION.md).
+
 | Environment | Value |
 |---|---|
 | Run date | 2026-11-27 |

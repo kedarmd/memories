@@ -62,33 +62,33 @@ These five tasks follow the experiments in [SPIKE_PLAN.md](SPIKE_PLAN.md). Creat
 
 **F5 scope explicitly excludes:** full production packaging and broad cross-platform certification.
 
-**Feasibility gate (F6, review decision; not necessarily a code issue):** Consolidate findings in `docs/SPIKE_RESULTS.md`; record verified capabilities, failed assumptions, security/privacy conditions, and changes to `docs/ARCHITECTURE.md`. Owner approves go/no-go or revised scope before V1 implementation. Do not label this gate complete simply because F1–F5 PRs merged.
+**Feasibility gate (F6, review decision; not necessarily a code issue):** Consolidate the recommendation in `docs/FEASIBILITY_DECISION.md`; preserve `docs/SPIKE_RESULTS.md` as the historical experiment record; record verified capabilities, failed assumptions, security/privacy conditions, and resulting changes to `docs/ARCHITECTURE.md`. Owner approves go/no-go or revised scope before V1 implementation. Do not label this gate complete simply because F1–F5 PRs merged.
+
+**F6 recommendation:** See [FEASIBILITY_DECISION.md](FEASIBILITY_DECISION.md). The proposed outcome is CONDITIONAL GO only for a narrow explicit continuity slice, subject to owner decision and separate issue approval. V1 topology is one user-level data root/database/core; F5 did not validate that topology. Real MCP interoperability and multi-project isolation are first-slice gates.
 
 ## 5. Provisional V1 implementation backlog (do not create detailed issues yet)
 
 The ordering is a working hypothesis, **not a frozen implementation specification**. Refine it using F1–F5 evidence and the [PRD acceptance criteria](PRD.md#7-v1-acceptance-criteria). Some areas may need merging or splitting to keep PRs human-reviewable.
 
-### M1 — Core continuity
+### M1 — Core continuity (reordered by F6 recommendation; provisional)
 
-- **M1.1** Durable local SQLite/Drizzle storage, migrations, stable project/workspace IDs and explicit project registration.
-- **M1.2** Task/session association and checkpoint persistence, idempotency, provenance, and lifecycle states.
-- **M1.3** Scoped context retrieval via SQL and FTS5, with observable source references.
-- **M1.4** Agent-independent MCP operations and verified explicit task-create, load, and update skills.
+- **First slice — continuity contract and real client proof:** establish the user-level data root and shared core; expose the minimum explicit task-create/associate, durable attributed checkpoint update, and source-linked load operations to CLI and real MCP clients. Prove two MCP clients plus CLI share one core, with multi-project/task isolation, protocol lifecycle/error behavior, and restart durability. Keep one reviewable issue; do not create it until F6 is accepted.
+- **Next, only after first-slice review:** complete the Drizzle schema/migrations and stable project/workspace registry needed by observed workflow; harden idempotency, provenance, lifecycle/freshness, and scoped SQL/FTS5 retrieval against labeled quality gates. Split into separate issues only when reviewably independent and approved serially.
 
-### M2 — Capture and knowledge maintenance
+### M2 — Capture and knowledge maintenance (provisional; gated on continuity)
 
 - **M2.1** Durable single-worker queue and configurable headless executor with recovery and accurate job status.
 - **M2.2** Verified harness-specific capture integration and compact/continuation skill, with coverage/fallback documentation.
 - **M2.3** Explicit Git-aware read-only refresh and current-state documentation generation with traceable citations.
 - **M2.4** Memory reconciliation, freshness, supersession rules, and review-required conflict persistence.
 
-### M3 — Local developer experience and release
+### M3 — Local developer experience and release (provisional; runtime/MCP contract first)
 
 - **M3.1** Global CLI and explicit skills/integration installer plus secure on-demand local service packaging.
 - **M3.2** React/Vite project/task/checkpoint explorer and read-only documentation browser with FTS5 search.
 - **M3.3** Memory-only temporary chat, developer conflict review UI, and integrated release validation.
 
-Expect to revise these candidate chunks after the feasibility gate. The final V1 must also validate cross-project isolation, concurrent sessions, privacy boundaries, failures, and real cross-agent continuation. These are acceptance gates across tasks, not optional cleanup.
+Expect to revise these candidate chunks after the feasibility gate and first-slice evidence. The final V1 must validate cross-project isolation, concurrent sessions, privacy boundaries, failures, and real cross-agent continuation. Real MCP interoperability is brought forward into the first slice rather than deferred to late packaging. These are acceptance gates across tasks, not optional cleanup.
 
 ## 6. Scope boundaries
 

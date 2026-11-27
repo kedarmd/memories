@@ -20,7 +20,7 @@ Memories is a local-first, agent-agnostic knowledge layer for software developme
 - Installed once on a machine through npm; repositories are registered explicitly with the CLI.
 - One shared on-demand local core serves CLI clients, MCP connections, and the browser UI. No permanently running daemon is required.
 - One globally selected headless coding executor for application-initiated AI work, configurable at setup and changeable later. It is independent of the agent used for day-to-day coding.
-- The application is designed for Linux, macOS, and Windows; supported/tested platforms must be declared based on actual verification, not assumed.
+- The intended application platforms are Linux, macOS, and Windows; the initial feasibility evidence covers Linux only. Declare supported platforms from actual verification, not this target list or assumed Node.js portability.
 - No cloud account or hosted Memories service. A configured coding agent or external issue provider may require a network connection; the user should know when data is sent outside the machine.
 
 ## 3. Scope and workflows
@@ -91,7 +91,7 @@ Distinguish two knowledge forms:
 
 Persist current memory lifecycle (`active`, `superseded`, `invalidated`) separately from freshness and verification status. Historical memories are retained unless explicitly removed under a user-approved policy. Newer timestamp alone does not imply correctness.
 
-**Citation requirement:** Important claims in memories and generated documents have traceable evidence where available: repository/file/commit and line/section location, session/checkpoint, or external ticket/document. Citations are structured metadata associated with claims or document sections. Never invent sources; missing or stale evidence must be visibly marked. Developer approval is not the same as code-level verification.
+**Citation requirement:** Important claims in memories and generated documents have traceable evidence where available: repository/file/commit and line/section location, session/checkpoint, or external ticket/document. Citations are structured metadata associated with claims or document sections. Never invent sources; missing or stale evidence must be visibly marked. Model/schema validity and developer approval are not code-level verification. Executor output remains proposed-unverified until its claim evidence is checked; unsupported references block automatic promotion.
 
 Project documentation is mutable current-state knowledge; its replacement must be atomic and evidence-informed. Do not silently overwrite important decisions on ambiguous evidence.
 

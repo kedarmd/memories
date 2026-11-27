@@ -1,6 +1,6 @@
 # Memories — V1 Technical Architecture
 
-**Status:** Proposed architecture, subject to feasibility spike outcomes.  
+**Status:** Conditional V1 architecture recommendation; owner decision recorded in [FEASIBILITY_DECISION.md](FEASIBILITY_DECISION.md). This is not implementation authorization.
 **Guiding rule:** Agent-agnostic core; harness integration at the edges.
 
 ## 1. Shape of the application
@@ -14,7 +14,7 @@ CLI ─────────────────────────�
 Browser UI ─ local HTTP/API ──────┘         └── durable job queue ── 1 headless executor
 ```
 
-Multiple lightweight MCP adapters/processes are acceptable, but **one coordinated core and at most one AI-intensive headless job** should run per user installation. Connectivity, session discovery, lifecycle capture, and skill installation must not leak harness-specific assumptions into the core.
+V1 chooses **one user-level application data root, one logical knowledge database, one coordinated on-demand core, and at most one AI-intensive headless job per installation**. Multiple lightweight MCP adapters/processes are acceptable. F5 verified one core per configured data root only; it did not verify this user-wide, multi-project topology. Before expanding runtime scope, prove two independent real MCP clients and a CLI client share this core and database while project/task isolation holds. Coordination metadata may be stored separately; it is not a second knowledge database. Connectivity, session discovery, lifecycle capture, and skill installation must not leak harness-specific assumptions into the core.
 
 ## 2. Technology choices
 
@@ -60,7 +60,7 @@ Project documents on the primary branch represent current verified shared knowle
 
 ## 5. Storage model (conceptual, not final DDL)
 
-All durable records live in **one SQLite database** in a user-level application data directory. Candidate tables:
+All durable knowledge records live in **one SQLite database** in the installation's user-level application data directory. Every request, job, and query carries explicit project scope and task scope where applicable. F5's separate owner-lock database is spike evidence, not a second knowledge database requirement. Candidate tables:
 
 - `projects`, `workspaces`, `repository_aliases`
 - `sessions`, `tasks`, `session_task_associations`
@@ -104,7 +104,7 @@ The UI's simple search is deterministic and no-LLM. Memory-only chat can call th
 
 **Single-worker policy:** normal HTTP/MCP retrieval and checkpoint writes remain concurrent. AI-intensive extraction and refresh jobs share one durable, serialized queue. Never launch duplicate workers from multiple MCP adapters or re-capture the memory executor's own sessions.
 
-**Completeness:** `saved`, `queued`, `running`, `verified`, `completed`, `failed`, and `review_required` must not be conflated in user-visible states. A queued extraction is not a completed memory update. Compact only reports success when a continuation artifact is usable.
+**Status truth:** Distinguish `saved`, `queued`, `proposed-unverified`, `verified`, `superseded`, `failed`, and `review-required`. A saved checkpoint is not extracted; a queued job is not a completed update; schema-valid model output is not verified knowledge. Unsupported citations block automatic promotion. Record verifier/reviewer and evidence. Keep freshness separate from verification and lifecycle. Compact only reports success when a continuation artifact is usable.
 
 ## 8. Knowledge reconciliation and Git
 
@@ -119,10 +119,10 @@ The UI's simple search is deterministic and no-LLM. Memory-only chat can call th
 
 ## 9. Runtime and packaging
 
-- One machine-wide `memories` installation provides CLI and built frontend assets.
+- One user-level `memories` installation provides CLI and built frontend assets and owns the shared V1 data root/database.
 - `memories init` registers a repo only; other explicit commands install skills or integration instructions, preserve existing files, and avoid duplicates.
 - A local UI command can start/connect to the core without any coding agent running.
-- On-demand startup must coordinate simultaneous callers, re-use the existing core, handle stale locks/crashes, and stay alive while clients or pending jobs require it. Shut down when idle with no outstanding work. Exact IPC/HTTP port/locking strategy is a spike outcome.
+- On-demand startup must coordinate simultaneous callers, reuse the existing core across projects, handle stale ownership/crashes, and stay alive while clients or pending jobs require it. Shut down when idle with no outstanding work. The first implementation gate exercises two real MCP clients plus CLI, multi-project isolation, protocol lifecycle/errors, and restart recovery. F5 JSON IPC is not MCP evidence. Exact production IPC/HTTP and ownership strategy remains subject to that gate.
 - The core and database stay usable if the default headless agent is unavailable; AI-dependent jobs show actionable errors, without silently switching providers.
 - Respect project isolation on every request and every background job. Limit local network exposure; authenticate/authorize local API access as justified by the host threat model. Never assume localhost alone solves all security concerns.
 
@@ -130,6 +130,12 @@ The UI's simple search is deterministic and no-LLM. Memory-only chat can call th
 
 Separate vector database; embedding service/model distribution; graph DB; interactive graph/Mermaid UI; SSR/full-stack React framework; remote team server; background Git watcher; generic plugin marketplace; persistent developer-chat history; per-project headless executor selection; fully automatic cross-harness session capture guarantee.
 
-## 11. Design uncertainties to test before freezing interfaces
+## 11. Conditional acceptance gates and remaining uncertainties
+
+The first V1 slice is the explicit task-create/associate, durable checkpoint update, and source-linked load path over CLI and real MCP. Owner approval of F6 and a separate issue is required before implementation. Do not include automatic capture, AI extraction, UI, refresh, or embeddings in that first slice.
+
+Before enabling real extraction, validate read-only enforcement, timeout/process cleanup, recursion prevention, at-least-once side-effect recovery, redaction/retention, and provider disclosure/consent. Keep Linux as the only evidenced platform until other platform suites pass. Maintain conservative empty/weak FTS5 results; use a larger labeled corpus with zero-overlap paraphrases and broad-query precision before considering semantic infrastructure. See [FEASIBILITY_DECISION.md](FEASIBILITY_DECISION.md) for gates, risks, and no-go triggers.
+
+## 12. Remaining design uncertainties
 
 Lifecycle events and content access in supported harnesses; headless executor command and non-interactive permissions; secure session redaction and retention; code citation verification across commits; cross-platform single-instance service coordination; performance and quality of FTS5 retrieval; mixed branch/worktree correctness.
