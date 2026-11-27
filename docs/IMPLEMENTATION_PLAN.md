@@ -62,33 +62,38 @@ These five tasks follow the experiments in [SPIKE_PLAN.md](SPIKE_PLAN.md). Creat
 
 **F5 scope explicitly excludes:** full production packaging and broad cross-platform certification.
 
-**Feasibility gate (F6, review decision; not necessarily a code issue):** Consolidate findings in `docs/SPIKE_RESULTS.md`; record verified capabilities, failed assumptions, security/privacy conditions, and changes to `docs/ARCHITECTURE.md`. Owner approves go/no-go or revised scope before V1 implementation. Do not label this gate complete simply because F1–F5 PRs merged.
+**Feasibility gate (F6, review decision; not necessarily a code issue):** Consolidate the recommendation in `docs/FEASIBILITY_DECISION.md`; preserve `docs/SPIKE_RESULTS.md` as the historical experiment record; record verified capabilities, failed assumptions, security/privacy conditions, and resulting changes to `docs/ARCHITECTURE.md`. Owner approves go/no-go or revised scope before V1 implementation. Do not label this gate complete simply because F1–F5 PRs merged.
+
+**F6 recommendation:** See [FEASIBILITY_DECISION.md](FEASIBILITY_DECISION.md). The proposed outcome is CONDITIONAL GO only for a narrow explicit continuity slice, subject to owner decision and separate issue approval. V1 topology is one user-level data root/database/core; F5 did not validate that topology. Real MCP interoperability and multi-project isolation are first-slice gates.
 
 ## 5. Provisional V1 implementation backlog (do not create detailed issues yet)
 
 The ordering is a working hypothesis, **not a frozen implementation specification**. Refine it using F1–F5 evidence and the [PRD acceptance criteria](PRD.md#7-v1-acceptance-criteria). Some areas may need merging or splitting to keep PRs human-reviewable.
 
-### M1 — Core continuity
+### M1 — Core continuity (reordered by F6 recommendation; provisional)
 
-- **M1.1** Durable local SQLite/Drizzle storage, migrations, stable project/workspace IDs and explicit project registration.
-- **M1.2** Task/session association and checkpoint persistence, idempotency, provenance, and lifecycle states.
-- **M1.3** Scoped context retrieval via SQL and FTS5, with observable source references.
-- **M1.4** Agent-independent MCP operations and verified explicit task-create, load, and update skills.
+The proposal is **three strictly sequential stages**, not a pre-approved batch of issues. Create and approve only the next issue after the prior stage's PR is merged and accepted. Each stage must be reviewable on its own; no stage authorizes the next one.
 
-### M2 — Capture and knowledge maintenance
+1. **Persistence foundation and scoped CLI contract.** Add only the minimal Drizzle-owned SQLite schema and migrations for stable project/task identity and durable checkpoint records, plus the scoped CLI operations needed to exercise those records. Acceptance: fresh install and migration upgrade/reopen preserve IDs and checkpoint attribution; uniqueness/foreign-key constraints and negative scope tests pass; CLI operations cannot read or write another project/task's records. This is the prerequisite for every workflow that claims durability.
+2. **Real MCP and shared-core protocol proof.** On the accepted storage foundation, add the actual MCP server/client contract and verify two independent MCP clients plus CLI reuse one user-level core. Acceptance: real protocol discovery and requests, protocol errors/cancellation/lifecycle, and restart/reconnection behavior are exercised against that core. Keep this stage limited to proving transport and shared-core behavior; task/checkpoint workflow acceptance belongs to Stage 3. This places MCP validation immediately after the persistence foundation, not in late packaging/UI work.
+3. **Explicit cross-agent continuity.** Use the Stage 1 records and Stage 2 MCP contract for explicit task create/association, durable attributed checkpoint update, and source-linked load. Acceptance: a non-sensitive task can be checkpointed through one client and loaded through another; `saved` is reported only after commit; source status and task/project scope are explicit; multi-project/task negative tests show no leakage. No AI extraction or automatic capture is required.
+
+Only after Stage 3 review should separately approved work expand retrieval quality, job execution, capture, refresh, or UI. Minimal production migrations and stable identifiers are part of Stage 1, not postponed schema polish. The stages above are proposals pending the owner's F6 decision; do not create their issues as part of F6.
+
+### M2 — Capture and knowledge maintenance (provisional; gated on continuity)
 
 - **M2.1** Durable single-worker queue and configurable headless executor with recovery and accurate job status.
 - **M2.2** Verified harness-specific capture integration and compact/continuation skill, with coverage/fallback documentation.
 - **M2.3** Explicit Git-aware read-only refresh and current-state documentation generation with traceable citations.
 - **M2.4** Memory reconciliation, freshness, supersession rules, and review-required conflict persistence.
 
-### M3 — Local developer experience and release
+### M3 — Local developer experience and release (provisional; runtime/MCP contract first)
 
 - **M3.1** Global CLI and explicit skills/integration installer plus secure on-demand local service packaging.
 - **M3.2** React/Vite project/task/checkpoint explorer and read-only documentation browser with FTS5 search.
 - **M3.3** Memory-only temporary chat, developer conflict review UI, and integrated release validation.
 
-Expect to revise these candidate chunks after the feasibility gate. The final V1 must also validate cross-project isolation, concurrent sessions, privacy boundaries, failures, and real cross-agent continuation. These are acceptance gates across tasks, not optional cleanup.
+Expect to revise these candidate chunks after the feasibility gate and evidence from the three M1 stages. The final V1 must validate cross-project isolation, concurrent sessions, privacy boundaries, failures, and real cross-agent continuation. Real MCP interoperability is the second sequential stage, directly after migration-backed persistence, rather than deferred to late packaging. These are acceptance gates across tasks, not optional cleanup.
 
 ## 6. Scope boundaries
 
