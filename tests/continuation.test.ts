@@ -1,6 +1,8 @@
 import { mkdtemp, rm } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { ContinuationStore, type ContinuationCheckpoint } from "../src/continuation.ts";
@@ -40,6 +42,24 @@ describe("durable task continuation", () => {
       "Explicit checkpoint coverage only; native conversation history is not stored or loaded.",
       "Evidence references are attributed, not independently verified by this store.",
     ]);
+  });
+
+  it("saves checkpoint JSON from stdin and loads it from later CLI processes", () => {
+    store.close();
+    const cli = fileURLToPath(new URL("../probes/continuation-store.ts", import.meta.url));
+    const run = (args: string[], input?: string) => spawnSync(process.execPath, ["--experimental-strip-types", cli, ...args], {
+      encoding: "utf8", input,
+    });
+    const saved = run(["save", database, "-"], JSON.stringify(checkpoint));
+    assert.equal(saved.status, 0, saved.stderr);
+    const receipt = JSON.parse(saved.stdout) as { id: string; state: string };
+    assert.equal(receipt.state, "saved");
+
+    const loaded = run(["load", database, "project-a", "task-1"]);
+    assert.equal(loaded.status, 0, loaded.stderr);
+    const packet = JSON.parse(loaded.stdout) as { checkpoints: ContinuationCheckpoint[] };
+    assert.equal(packet.checkpoints[0]?.decisions[0], checkpoint.decisions[0]);
+    store = new ContinuationStore(database);
   });
 
   it("does not duplicate an identical retry", () => {
