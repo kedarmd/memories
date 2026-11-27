@@ -1,0 +1,81 @@
+name: Feasibility spike
+description: A bounded experiment with reproducible evidence and an explicit architecture decision
+title: "[Spike] "
+labels: ["type:spike"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A negative or partial result is valid. Do not build production infrastructure merely to make an experiment pass.
+        Record sanitized evidence and capability gaps; see docs/SPIKE_PLAN.md.
+  - type: textarea
+    id: question
+    attributes:
+      label: Question and hypothesis
+      description: What technical assumption are we testing? What result would change our design?
+      placeholder: We believe ... because ...; if false, we will ...
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment and prerequisites
+      description: Harnesses, versions, OS, commands, sample repo, prior spike dependencies.
+      placeholder: Harness/version; Node version; prerequisite merged issue...
+    validations:
+      required: true
+  - type: textarea
+    id: experiment
+    attributes:
+      label: Experiment steps
+      description: Small, repeatable procedure with bounded implementation.
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: non_goals
+    attributes:
+      label: Out of scope
+      description: Particularly important for preventing speculative implementation.
+      placeholder: |
+        - No production-scale ...
+    validations:
+      required: true
+  - type: textarea
+    id: pass_fail
+    attributes:
+      label: Pass / fail / inconclusive criteria
+      description: Include honest evidence conditions for partial support and failure.
+      placeholder: |
+        - Pass when...
+        - Fail when...
+        - Inconclusive when...
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Required evidence
+      description: Sanitized fixtures, test commands, traces, captured events, measured results.
+      placeholder: |
+        - ...
+    validations:
+      required: true
+  - type: textarea
+    id: decision
+    attributes:
+      label: Decision to make after the spike
+      description: Concrete architecture consequence and fallback if hypothesis fails.
+      placeholder: Adopt / constrain / discard ... based on the findings.
+    validations:
+      required: true
+  - type: textarea
+    id: deliverables
+    attributes:
+      label: Deliverables
+      description: Prototype, tests, report updates, known limitations, follow-up recommendations.
+      placeholder: docs/SPIKE_RESULTS.md, executable fixture/test...
+    validations:
+      required: true
