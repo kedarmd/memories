@@ -1,17 +1,20 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { createServer, connect } from 'node:net';
+import { mkdtemp, readFile, rm, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import { ContinuationStore } from '../src/continuation.ts';
+import { f5SocketPath } from '../src/runtime-f5.ts';
 
 type Json = Record<string, any>;
 const entry = resolve('src/runtime-f5.ts');
 
-function client(root: string, request: Json, idleMs: number, events: string): Promise<Json> {
+function runClient(root: string, request: Json, idleMs: number, events: string): Promise<{ code: number | null; stdout: string; stderr: string; elapsedMs: number }> {
   return new Promise((resolvePromise, reject) => {
+    const startedAt = Date.now();
     const child = spawn(process.execPath, ['--experimental-strip-types', entry, 'client', root, JSON.stringify(request), String(idleMs), events], { stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
     let err = '';
@@ -21,9 +24,27 @@ function client(root: string, request: Json, idleMs: number, events: string): Pr
     child.once('error', (error) => { clearTimeout(timer); reject(error); });
     child.once('close', (code) => {
       clearTimeout(timer);
-      if (code !== 0) { reject(new Error(`client exit ${String(code)}: ${err}`)); return; }
-      try { resolvePromise(JSON.parse(out.trim()) as Json); } catch { reject(new Error(`invalid client output: ${out}; ${err}`)); }
+      resolvePromise({ code, stdout: out, stderr: err, elapsedMs: Date.now() - startedAt });
     });
+  });
+}
+async function client(root: string, request: Json, idleMs: number, events: string): Promise<Json> {
+  const result = await runClient(root, request, idleMs, events);
+  if (result.code !== 0) throw new Error(`client exit ${String(result.code)}: ${result.stderr}`);
+  try { return JSON.parse(result.stdout.trim()) as Json; }
+  catch { throw new Error(`invalid client output: ${result.stdout}; ${result.stderr}`); }
+}
+function awaitListening(server: ReturnType<typeof createServer>, path: string): Promise<void> {
+  return new Promise((resolvePromise, reject) => {
+    server.once('error', reject);
+    server.listen(path, () => { server.removeListener('error', reject); resolvePromise(); });
+  });
+}
+function canConnect(path: string): Promise<boolean> {
+  return new Promise((resolvePromise) => {
+    const socket = connect(path);
+    socket.once('connect', () => { socket.destroy(); resolvePromise(true); });
+    socket.once('error', () => resolvePromise(false));
   });
 }
 
@@ -41,6 +62,43 @@ async function waitFor<T>(read: () => Promise<T>, predicate: (value: T) => boole
   throw new Error('condition not reached before deadline');
 }
 function alive(pid: number): boolean { try { process.kill(pid, 0); return true; } catch { return false; } }
+
+test('concurrent clients never replace a live but unresponsive socket owner', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'memories-f5-unresponsive-'));
+  const eventsFile = join(root, 'events.jsonl');
+  const socketPath = await f5SocketPath(root);
+  let fakeConnections = 0;
+  const fakeOwner = createServer((socket) => { fakeConnections++; socket.on('data', () => {}); });
+  await awaitListening(fakeOwner, socketPath);
+  t.after(async () => {
+    await new Promise<void>((resolvePromise) => fakeOwner.close(() => resolvePromise()));
+    try { await unlink(socketPath); } catch { /* already removed */ }
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const results = await Promise.all([
+    runClient(root, { op: 'identity' }, 500, eventsFile),
+    runClient(root, { op: 'identity' }, 500, eventsFile),
+  ]);
+  for (const result of results) {
+    assert.notEqual(result.code, 0, 'client fails boundedly when the owning endpoint never answers');
+    assert.match(result.stderr, /occupied but unresponsive endpoint is not replaced/);
+    assert.ok(result.elapsedMs >= 200 && result.elapsedMs < 7000, `client retry elapsed ${result.elapsedMs}ms`);
+  }
+  assert.equal(fakeOwner.listening, true);
+  const priorConnections = fakeConnections;
+  assert.equal(await canConnect(socketPath), true);
+  await delay(20);
+  assert.equal(fakeConnections, priorConnections + 1, 'the original listener still owns the socket pathname');
+  const rows = await eventsAt(eventsFile);
+  const rejectedCandidates = rows.filter((row) => row.type === 'core_candidate_reused' && row.endpoint === 'accepting');
+  assert.equal(rejectedCandidates.length, 2, 'each independent client launched one bounded contender');
+  for (const candidate of rejectedCandidates) {
+    assert.equal(typeof candidate.pid, 'number');
+    await waitFor(async () => ({ alive: alive(candidate.pid) }), (state) => !state.alive, 2000);
+  }
+  assert.equal(rows.filter((row) => row.type === 'core_start').length, 0, 'no duplicate core bound the live pathname');
+});
 
 test('independent clients share one on-demand core, serialize jobs, serve reads, and recover after crash', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'memories-f5-test-'));
@@ -142,7 +200,12 @@ test('independent clients share one on-demand core, serialize jobs, serve reads,
   const startsBeforeCrash = (await eventsAt(eventsFile)).filter((e) => e.type === 'core_start' && e.root === a.root).length;
   process.kill(restarted.pid, 'SIGKILL');
   await waitFor(async () => ({ alive: alive(restarted.pid) }), (r) => !r.alive, 2000);
-  const recovered = await client(root, { op: 'status', ...scope }, idleMs, eventsFile);
+  const [recovered, recoveredIdentity] = await Promise.all([
+    client(root, { op: 'status', ...scope }, idleMs, eventsFile),
+    client(root, { op: 'identity' }, idleMs, eventsFile),
+  ]);
+  assert.equal(recovered.instanceId, recoveredIdentity.instanceId);
+  assert.equal(recovered.pid, recoveredIdentity.pid);
   assert.notEqual(recovered.instanceId, restarted.instanceId);
   assert.equal(recovered.jobs.find((j: Json) => j.id === crashJob.job.id).state, 'failed');
   assert.match(recovered.jobs.find((j: Json) => j.id === crashJob.job.id).error, /terminated during execution/);

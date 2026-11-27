@@ -41,6 +41,10 @@ async function paths(rootArg: string): Promise<{ root: string; dir: string; sock
   return { root, dir, socket: join(dir, `${digest}.sock`), db: join(root, 'memories-f5.sqlite') };
 }
 
+export async function f5SocketPath(rootArg: string): Promise<string> {
+  return (await paths(rootArg)).socket;
+}
+
 function write(socket: Socket, value: unknown): void { socket.write(`${JSON.stringify(value)}\n`); }
 
 async function startCore(rootArg: string, idleMs: number, events: string): Promise<void> {
@@ -139,21 +143,34 @@ async function startCore(rootArg: string, idleMs: number, events: string): Promi
     } finally { active = false; scheduleIdle(); }
   }, catch: (error) => error }));
 
-  // bind() is the ownership election. A live socket is reusable; a refused connection
-  // means the pathname is stale and may be removed before retrying the election.
+  // SQLite serializes all bind/recovery contenders. The transaction is short and
+  // kernel-released on crash; no pathname is removed outside this election.
+  db.exec('BEGIN IMMEDIATE');
   try { await listen(socketServer, p.socket); }
   catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') { db.close(); store.close(); throw error; }
-    try {
-      await request(p.socket, { op: 'identity' }, 250);
-      db.close(); store.close(); process.exit(17);
-    } catch {
-      // EADDRINUSE plus a refused connection is a stale socket. Retry the
-      // election; if another contender wins, its live identity probe succeeds.
-      try { await unlink(p.socket); } catch { /* another contender may have removed it */ }
-      try { await listen(socketServer, p.socket); }
-      catch (retryError) { db.close(); store.close(); process.exit((retryError as NodeJS.ErrnoException).code === 'EADDRINUSE' ? 17 : 1); }
+    if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') {
+      db.exec('ROLLBACK'); db.close(); store.close(); throw error;
     }
+    const endpoint = await probeSocket(p.socket, 250);
+    if (endpoint !== 'refused') {
+      // A connectable endpoint owns the pathname even if its identity response
+      // is slow or absent. Unknown probe results are also treated as occupied.
+      event(events, { type: 'core_candidate_reused', pid: process.pid, endpoint });
+      db.exec('ROLLBACK'); db.close(); store.close(); process.exit(17);
+    }
+    try { await unlink(p.socket); }
+    catch { db.exec('ROLLBACK'); db.close(); store.close(); process.exit(17); }
+    try { await listen(socketServer, p.socket); }
+    catch (retryError) {
+      db.exec('ROLLBACK'); db.close(); store.close();
+      process.exit((retryError as NodeJS.ErrnoException).code === 'EADDRINUSE' ? 17 : 1);
+    }
+  }
+  try { db.exec('COMMIT'); }
+  catch (error) {
+    socketServer.close();
+    try { await unlink(p.socket); } catch { /* cleanup best effort before startup failure */ }
+    db.close(); store.close(); throw error;
   }
   await chmod(p.socket, 0o600);
   // Only the socket owner may recover interrupted work. Losing startup racers
@@ -170,6 +187,25 @@ function listen(server: ReturnType<typeof createServer>, path: string): Promise<
   return new Promise((resolvePromise, reject) => {
     server.once('error', reject);
     server.listen(path, () => { server.removeListener('error', reject); resolvePromise(); });
+  });
+}
+
+type SocketProbe = 'accepting' | 'refused' | 'unknown';
+
+function probeSocket(path: string, timeoutMs: number): Promise<SocketProbe> {
+  return new Promise((resolvePromise) => {
+    const socket = connect(path);
+    let settled = false;
+    const finish = (result: SocketProbe) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolvePromise(result);
+    };
+    const timer = setTimeout(() => finish('unknown'), timeoutMs);
+    socket.once('connect', () => finish('accepting'));
+    socket.once('error', (error) => finish((error as NodeJS.ErrnoException).code === 'ECONNREFUSED' ? 'refused' : 'unknown'));
   });
 }
 
@@ -196,10 +232,10 @@ async function ensureCore(root: string, idleMs: number, events: string): Promise
   const p = await paths(root);
   const entry = process.argv[1];
   if (!entry) throw new Error('runtime entrypoint unavailable');
-  const probe = async () => request(p.socket, { op: 'identity' });
+  const deadline = Date.now() + 2500;
   let launched = false;
-  for (let attempt = 0; attempt < 80; attempt++) {
-    try { await probe(); return p.socket; }
+  while (Date.now() < deadline) {
+    try { await request(p.socket, { op: 'identity' }, 250); return p.socket; }
     catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (!launched) {
@@ -215,7 +251,7 @@ async function ensureCore(root: string, idleMs: number, events: string): Promise
       await new Promise((r) => setTimeout(r, 25));
     }
   }
-  throw new Error('could not connect to a shared core within 2 seconds');
+  throw new Error('could not connect to a shared core within 2500ms; an occupied but unresponsive endpoint is not replaced');
 }
 
 async function runClient(root: string, requestText: string, idleMs: number, events: string): Promise<void> {
