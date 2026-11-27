@@ -1,0 +1,89 @@
+name: Implementation task
+description: One bounded, independently reviewable V1 capability
+title: "[Implementation] "
+labels: ["type:implementation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        One issue represents one coherent deliverable, not a collection of unrelated changes.
+        Read docs/IMPLEMENTATION_PLAN.md and the relevant product/architecture sections before starting.
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective
+      description: State the observable outcome, not just an implementation technique.
+      placeholder: After this issue, a developer can...
+    validations:
+      required: true
+  - type: textarea
+    id: references
+    attributes:
+      label: Requirements and decisions
+      description: Link relevant sections of PRD, architecture, engineering principles, and preceding evidence.
+      placeholder: docs/PRD.md §3.1; prerequisite issue...
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: In scope
+      description: One coherent deliverable and the work needed to test it.
+      placeholder: |
+        - ...
+    validations:
+      required: true
+  - type: textarea
+    id: non_goals
+    attributes:
+      label: Out of scope
+      description: Explicitly prevent related but premature implementation.
+      placeholder: |
+        - ...
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies and readiness
+      description: Link merged prerequisite PRs/issues or explain why this is unblocked.
+      placeholder: Issue #... merged; no other implementation issue in progress.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Provide observable conditions a reviewer can verify; prefer checkboxes.
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation and evidence
+      description: Exact automated commands, manual scenarios, expected outputs, and required proof.
+      placeholder: |
+        - Automated: ...
+        - Manual: ...
+        - Evidence: ...
+    validations:
+      required: true
+  - type: textarea
+    id: deliverables
+    attributes:
+      label: Deliverables
+      description: Expected code, tests, docs, and PR evidence.
+      placeholder: |
+        - ...
+    validations:
+      required: true
+  - type: textarea
+    id: risks
+    attributes:
+      label: Known risks or open decisions
+      description: State unknowns instead of silently turning them into requirements.
+    validations:
+      required: false
