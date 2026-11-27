@@ -225,3 +225,77 @@ The schema is deliberately a small F1 fixture. F2 must decide the durable, agent
 ## F1 recommendation
 
 Proceed to owner review of F1. Candidate next-step boundary: accept explicit structured checkpoints universally; treat Codex lifecycle hooks/JSONL and OpenCode events/export as optional adapter evidence, with coverage marked partial whenever data is absent, the stream disconnects, or a supported event was not observed. Do not make Codex's unstable transcript format a required dependency. Compaction completion and crash recovery remain explicit coverage gaps.
+
+## F2 — Isolated headless memory extraction
+
+**Date:** 2026-11-27
+
+**Decision:** Bounded pass for one configured Codex CLI executor on this Linux host. A small explicit checkpoint produced four schema-valid, task-scoped, source-referenced proposals covering a decision, completed work, a failed approach, and a blocker. The proposals retain uncertainty and are labeled `proposed-unverified`. The run does not establish factual correctness or production-grade isolation across platforms.
+
+### Environment and data disclosure
+
+- Host: Linux x86_64 (`7.3.5-arch1-1`); Node.js `v24.22.3`; npm `11.19.1`.
+- Selected executor: Codex CLI `0.172.0`; OpenCode `2.4.1` was installed but not used for F2.
+- Model: `gpt-6-luna`, explicitly selected with `--model`. Codex authentication came from the existing `CODEX_HOME`; provider diagnostics were not emitted by the runner. Inference used the configured Codex service and requires network access.
+- The only model input was the synthetic checkpoint JSON, its synthetic project/task/session references, and a disposable repository containing one short cache-policy fixture file. No private source, user conversation, session transcript, credentials, or actual user project data was supplied or committed. The provider received the checkpoint content and references for inference; the fixture directory was available to the sandboxed CLI, though extraction prompts instructed the model not to inspect files.
+- The runner used `--ignore-user-config` to prevent inheriting user-level hooks, `--ephemeral` to avoid persisting Codex session files, and `--sandbox read-only`. Project fixture contained no Codex/OpenCode hooks. A separate deliberate write probe received `Read-only file system`; the requested file remained absent.
+
+### Contract and behavior
+
+`src/extraction.ts` defines a spike-only `CheckpointInput` contract with project/task/session references, bounded checkpoint text, one or more source links, a complete/partial coverage label, and required uncertainty. Zod rejects unknown fields and bounds input to 16 KiB. This follows F1's explicit checkpoint and source-attribution concepts; it is an experiment contract, not a frozen production or F1 fixture schema.
+
+The output schema accepts at most eight short proposals. Each proposal has a decision/outcome/failed-approach/blocker category, claim, exact project/task scope, one or more evidence references, and uncertainty. Every output reference must exactly match a supplied input source link; mismatched scope or fabricated references fail the extraction. Accepted records receive `proposed-unverified`. This allowlist check proves only that a reference was supplied: it does not prove the source supports the claim, verify arbitrary repository paths/line ranges, or independently validate the underlying fact.
+
+The subprocess adapter uses Effect for interruptible orchestration and typed failures, Node `spawn` without a shell, and Zod for both external input and model output. It bounds input at 16 KiB, combined stdout/stderr at 32 KiB by default, and execution to at most 120 seconds (90 seconds in the real runner). On POSIX, it starts a separate process group, sends TERM, waits up to 500 ms for `close`, sends KILL to the group if needed, and waits up to 2 seconds for `close` before reporting timeout or output-limit failure. Effect interruption also awaits this termination finalizer. If closure is not observed by the deadline, the operation reports `CLEANUP_FAILED`; cancellation fails its finalizer instead of claiming cleanup. The Windows path signals only the direct child and was not tested. A deliberately detached descendant that does not inherit the executor's pipes can escape group tracking; this spike does not promise cleanup of such processes. It performs no retries. A SHA-256 key over the normalized input is stable for identical input; it is a candidate deduplication key only, with no persistence or durable deduplication in this spike.
+
+The example input is [probes/extraction-input.example.json](../probes/extraction-input.example.json). Reproduce in a disposable, non-sensitive Git repository containing `src/cache-policy.md`:
+
+```sh
+node --experimental-strip-types probes/run-extraction.ts /path/to/checkpoint.json /path/to/disposable-repo
+```
+
+The runner invokes:
+
+```sh
+codex exec --ignore-user-config --ephemeral --sandbox read-only --json \
+  --model gpt-6-luna -C /path/to/disposable-repo '<bounded extraction prompt and checkpoint JSON>'
+```
+
+Input and output are validated in-process. The runner prints only the idempotency key and validated proposals; it does not persist raw agent JSONL or transcripts.
+
+### Sanitized real extraction evidence
+
+Two repeated runs with the same checkpoint and explicit model had the same input key (`eb4f9262…e26fe`) and the same four proposal categories; wording varied. A third explicit-model run also passed. The accepted trace included:
+
+```json
+[
+  {"category":"decision","claim":"The checkpoint records a decision to use a bounded in-memory cache with a 30 second TTL.","scope":{"projectId":"project-demo","taskId":"task-cache-policy"},"evidenceRefs":["session-checkpoint-001#checkpoint"],"uncertainty":"This was recorded for one disposable experiment; production workload and invalidation behavior are not verified.","status":"proposed-unverified"},
+  {"category":"outcome","claim":"Lookup and expiry behavior were implemented in the disposable fixture.","scope":{"projectId":"project-demo","taskId":"task-cache-policy"},"evidenceRefs":["session-checkpoint-001#checkpoint"],"uncertainty":"The checkpoint does not verify behavior in production.","status":"proposed-unverified"},
+  {"category":"failed-approach","claim":"An unbounded map retained expired keys during the first experiment.","scope":{"projectId":"project-demo","taskId":"task-cache-policy"},"evidenceRefs":["session-checkpoint-001#checkpoint"],"uncertainty":"This refers to the first experiment only.","status":"proposed-unverified"},
+  {"category":"blocker","claim":"Production invalidation semantics remain undecided.","scope":{"projectId":"project-demo","taskId":"task-cache-policy"},"evidenceRefs":["session-checkpoint-001#checkpoint"],"uncertainty":"The checkpoint says production invalidation behavior is not verified.","status":"proposed-unverified"}
+]
+```
+
+These are proposals attributed to the supplied checkpoint, not independently verified facts. Although the input also linked `src/cache-policy.md`, the model selected the checkpoint reference for each item; the run did not demonstrate claim-level file citation selection. The fixture file hash was `969eb686bb22f711392754ed695f9399dcf43b452b15adb0b0dab1681a08e63f` before and after. Git status was clean before and after, and the deliberate `write-probe.txt` sandbox test failed with `Read-only file system`; no repository file changed.
+
+### Failure and repeatability evidence
+
+`npm test` covers the following deterministic cases: invalid/oversized checkpoint and executor configuration; schema-valid output; stable input key; fabricated source and mismatched-scope rejection; malformed output; unavailable CLI; nonzero exit; timeout; oversized combined stdout/stderr; and cancellation with child-process termination. There are no retry attempts. The real repeated run confirms stable key and category set, not deterministic wording or semantic correctness.
+
+### Limits and F3 candidate boundary
+
+- Codex's read-only sandbox blocked the tested write attempt on this Linux host. The adapter is only protected when configured with the corresponding harness permission; arbitrary custom executors and other operating systems are not sandboxed or verified by this code. Prompts alone provide no isolation.
+- `--ignore-user-config` disabled inherited user hooks in this experiment; the fixture had no project hooks. The runner is invoked explicitly and does not register a capture hook, start a Memories capture service, or feed its own session into extraction. This is evidence for this execution path, not a system-wide recursion guarantee.
+- The Node caller awaits extraction, though the child runs independently and does not block the Node event loop. No foreground coding harness or durable worker/queue was running, and foreground-session responsiveness was not measured end-to-end.
+- No durable checkpoint/job store, deduplication persistence, retries, provider fallback, arbitrary citation verification, broad harness support, cross-platform guarantee, or complete privacy/retention review was implemented. Model wording and semantic quality remain nondeterministic.
+- Before F3, keep the smallest boundary as a validated agent-independent checkpoint plus a configured executor accepting bounded input and returning validated proposals. Make sandbox enforcement an explicit executor capability/configuration and keep proposals separate from independently verified claims. Defer durable scheduling and cross-agent continuation as issue #5 requires.
+
+### Validation result
+
+On the original F2 checkout, `npm test` passed (7 tests), `npm run check` passed, and `npm run build` passed. The real Codex extraction ran three times; the repeated explicit-model runs had stable input IDs, all four expected categories, varied wording, validated references/scope, and no sample repository mutation. The intentional sandbox write was denied. These results support a bounded F2 pass on the tested host; cross-platform enforcement, end-to-end foreground responsiveness, and factual verification remain untested.
+
+### PR #6 subprocess cleanup follow-up
+
+Review reproduced that the original TERM path settled timeout, cancellation, and output-limit outcomes before the child had exited. Regression tests now use TERM-ignoring parent and descendant processes and assert that extraction does not settle until the POSIX process group closes. The tests also cover a detached descendant that holds inherited pipes open beyond the cleanup deadline; that case reports `CLEANUP_FAILED` rather than a timeout success/failure that implies cleanup completed. This follow-up changes only the F2 subprocess boundary and tests; it adds no durable worker or scheduler.
+
+Validation after the review correction: `npm test` passes (9 total tests: 8 extraction cases and the scaffold smoke test), `npm run check` passes, and `npm run build` passes. The subprocess lifecycle tests also pass directly with `node --experimental-strip-types --test tests/extraction.test.ts`. They cover timeout, cancellation, output limit, TERM-to-KILL escalation, group closure, and explicit bounded cleanup failure. Cross-platform process-tree termination remains unverified.

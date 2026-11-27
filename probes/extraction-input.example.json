@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "projectId": "project-demo",
+  "taskId": "task-cache-policy",
+  "sessionRef": "session-checkpoint-001",
+  "checkpoint": "Decision: use a bounded in-memory cache with a 30 second TTL. Completed: implemented lookup and expiry behavior in the disposable fixture. Failed approach: an unbounded map retained expired keys during the first experiment. Blocker: production invalidation semantics remain undecided.",
+  "sourceLinks": [
+    { "kind": "file", "ref": "src/cache-policy.md" },
+    { "kind": "session-event", "ref": "session-checkpoint-001#checkpoint" }
+  ],
+  "coverage": "partial",
+  "uncertainty": "The checkpoint covers one disposable experiment; production workload and invalidation behavior are not verified."
+}
