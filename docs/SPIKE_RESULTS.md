@@ -386,3 +386,52 @@ Review the two responses and diffs. In this run, the no-packet session relied on
 On this checkout, `npm test` passes (15 tests: 6 continuation-store, 8 extraction, 1 scaffold); `npm run check` and `npm run build` pass. The live feature tests passed 2/2 after Codex, 7/7 in the no-packet control, and 4/4 in the loaded-packet run; fixture `git diff --check` passed. The trace assertion reported `savedBeforeHandoff: true`, and the later process loaded one checkpoint from SQLite.
 
 This is not a production design. There was no reverse-direction run, native capture, automatic task association, source-claim verification, crash test beyond database close/reopen, FTS/search, or production migration. The built-in `node:sqlite` implementation was verified only on this Linux host. The checkpoint session ID is an experiment alias, not the harness-native thread ID; event-order evidence links the save to the originating Codex turn. A no-packet agent may still independently discover implementation work; this control specifically failed to surface the checkpoint-only `@` rule. Agent wording/diffs can vary. No architecture amendment is proposed; F4 should measure retrieval beyond exact project/task loading.
+
+## F4 — Scoped SQLite/FTS5 retrieval benchmark
+
+**Date:** 2026-11-27
+**Decision:** Bounded pass for explicit, scoped V1 context loading; lexical search is not semantic search. Following PR review, the ranking now preserves FTS5's negative BM25 ordering as its primary signal; lifecycle, evidence, freshness, and stable ID break lexical ties only. SQL scope and lifecycle filters prevent cross-task/project and obsolete-memory leakage in normal retrieval. The fixture still records a zero-overlap paraphrase miss and substantial false positives on broad OR queries. Keep embeddings deferred. Evaluate them later only if a larger, representative labeled corpus shows recurring important zero-overlap misses after measured lexical improvements.
+
+### Environment, fixture, and reproduction
+
+- Linux x86_64; Node.js `v24.22.3`; built-in SQLite `3.54.1`; FTS5 available with `unicode61` tokenizer.
+- All eight stored records and ten query labels are synthetic. The fixture assigns stable IDs, project/task scope, lifecycle, source reference and explicit source-presence flag. Expected relevant IDs live beside the fixture before scoring code; no private repository, model, or network request is involved.
+- Reproduce with `node --experimental-strip-types probes/f4-benchmark.ts`; run tests with `npm test`. The implementation is an in-memory, spike-only schema, not a production migration or durable service.
+
+### Retrieval contract
+
+`src/retrieval-f4.ts` accepts an explicit project, task, bounded query, result limit, and optional historical flag. SQL applies project equality and `(task_id IS NULL OR task_id = requested task)` before lexical candidate ranking. Normal mode also selects only `active`; historical mode may include old lifecycle states, which remain labeled. Candidate count is capped at 50 and output at 10 (benchmark k=5).
+
+Query text is split into Unicode letter/number tokens, individually quoted, and joined with `OR`. FTS5 uses `unicode61`; there is no stemming, prefix search, phrase matching, or synonym expansion. Results sort by ascending raw BM25 (more-negative is stronger); lifecycle, source-existence, fixture-relative freshness, then stable ID are secondary tie-breakers only. The returned score is `-BM25` so larger values mean stronger lexical relevance. Results include bounded record text, source reference when present, source-existence flag, lifecycle, and an uncertainty statement. Source existence is fixture metadata, not proof that a citation supports a claim.
+
+### Fixed-k results
+
+The reproducible benchmark produced the following hit lists at k=3 and k=5. Exact order is the deterministic ranking order.
+
+| Query | Expected | Actual @3 | Actual @5 | Hits @3 / @5 |
+| --- | --- | --- | --- | ---: |
+| direct-ttl | `p1-cache` | `p1-cache, t1-citation-bad, t1-invalidate` | `p1-cache, t1-citation-bad, t1-invalidate, t3-checkpoint` | 1/1; 1/1 |
+| direct-invalidation | `t1-invalidate` | `t1-invalidate, t3-checkpoint, t1-citation-bad` | `t1-invalidate, t3-checkpoint, t1-citation-bad, p1-cache` | 1/1; 1/1 |
+| paraphrase-expiry | `p1-cache` | `p1-cache` | `p1-cache` | 1/1; 1/1 |
+| paraphrase-synonym-failure | `p1-cache` | *(empty)* | *(empty)* | 0/1; 0/1 |
+| paraphrase-failure | `t1-invalidate, t3-checkpoint` | `t3-checkpoint, t1-citation-bad, t1-invalidate` | `t3-checkpoint, t1-citation-bad, t1-invalidate` | 2/2; 2/2 |
+| cross-task negative | *(none)* | *(empty)* | *(empty)* | — |
+| cross-project negative | *(none)* | `p1-cache, t1-citation-bad, t1-invalidate` | `p1-cache, t1-citation-bad, t1-invalidate, t3-checkpoint` | — |
+| negative | *(none)* | *(empty)* | *(empty)* | — |
+| historical | `t1-old-ttl` | `t1-old-ttl, t1-invalidate, p1-cache` | `t1-old-ttl, t1-invalidate, p1-cache, t1-citation-bad, t1-bad-lock` | 1/1; 1/1 |
+| ambiguous | `p1-cache, t1-invalidate, t3-checkpoint, t1-citation-bad` | `t1-citation-bad, t1-invalidate, t3-checkpoint` | `t1-citation-bad, t1-invalidate, t3-checkpoint, p1-cache` | 3/4; 4/4 |
+
+Across 11 labeled relevant query-result pairs, recall@3 is `9/11 = 81.8%` and precision@3 is `9/19 = 47.4%` (10 false-positive results). Recall@5 is `10/11 = 90.9%` and precision@5 is `10/25 = 40.0%` (15 false-positive results). The cross-project negative query asks for Borealis content while searching Atlas: four Atlas records match shared cache/time terms at k=5. These are false positives, not cross-project leakage; relational filtering correctly returns zero Borealis records. The task-history negative and unrelated negative returned zero rows. Normal retrieval had zero superseded/invalidated leakage. Explicit history returned the superseded record first; it was labeled `superseded`.
+
+Across top-5 results, citations were present on `20/25` and marked valid by fixture source-existence metadata on `14/25`. This is only a basic linkage check; no external file/section was opened, and factual support was not checked. The compact top-5 packets totaled 2,210 text characters (about 557 tokens at the rough 4 characters/token estimate) over all ten queries. Mean per-query SQLite latency was 0.54 ms in one measured run and 0.50 ms on repeat; this tiny in-process fixture is not a production latency claim. Both benchmark reruns produced identical @3 and @5 hit lists; timing naturally varies.
+
+### Failures, tests, and recommendation
+
+- `how many days until data expires` has expected `p1-cache` but returns zero. It shares no indexed terms with “30 second time to live” / “Expired entries”; `unicode61` does not stem or bridge those synonyms. Another paraphrase sharing “entries” succeeds, showing the boundary depends on overlap, not general paraphrase understanding.
+- The regression fixture gives two records identical scope, lifecycle, evidence, and freshness but different query match quality; the stronger lexical result must rank first. The full synthetic benchmark suite requires at least 9/11 labeled hits at @3 and 10/11 at @5, so tests fail if the ranking regression returns.
+- Broad OR matching returns two non-relevant results among the top three for each direct query; historical lookup has two non-relevant active results in the top three alongside the expected obsolete record. Precision remains modest even though recall@5 is high on these labels.
+- `t1-citation-bad` is deliberately returned with a source reference whose fixture existence flag is false. The result marks this state; citation presence must not be conflated with verifiability.
+- Automated cases cover SQL project/task eligibility, project-wide documents, normal vs historical lifecycle, deterministic ties, zero-result and punctuation-only input, malformed/oversized input, result bounds, injection-shaped FTS text, citation status, and uncertainty metadata. No database mutation is exposed beyond deterministic fixture seeding.
+- `npm test`: 19 tests passed. `npm run check`, `npm run build`, and `git diff --check`: passed. The benchmark command completed; @3/@5 hit lists were identical on repeat runs.
+
+For the next milestone, retain a narrow retrieval boundary taking explicit scope/query/history options and returning bounded, attributed snippets with uncertainty. The SQLite candidate source can later sit behind that boundary; F4 does not justify a semantic provider or embedding infrastructure. The current baseline is suitable as a constrained lexical default only when callers can inspect an empty/weak result and refine the query. Revisit embeddings only if broader labeled task fixtures show repeatable important zero-overlap misses that small lexical improvements do not resolve.
