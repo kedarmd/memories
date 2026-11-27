@@ -32,13 +32,19 @@ function event(path: string, data: Record<string, unknown>): void {
   appendFileSync(path, line, { mode: 0o600 });
 }
 
-async function paths(rootArg: string): Promise<{ root: string; dir: string; socket: string; db: string }> {
+async function paths(rootArg: string): Promise<{ root: string; dir: string; socket: string; db: string; ownerDb: string }> {
   const root = await realpath(resolve(rootArg));
   const digest = createHash('sha256').update(root).digest('hex').slice(0, 32);
   const dir = join(tmpdir(), `memories-f5-${process.getuid?.() ?? 'user'}`);
   await mkdir(dir, { recursive: true, mode: 0o700 });
   await chmod(dir, 0o700);
-  return { root, dir, socket: join(dir, `${digest}.sock`), db: join(root, 'memories-f5.sqlite') };
+  return {
+    root,
+    dir,
+    socket: join(dir, `${digest}.sock`),
+    db: join(root, 'memories-f5.sqlite'),
+    ownerDb: join(root, 'memories-f5-core-owner.sqlite'),
+  };
 }
 
 export async function f5SocketPath(rootArg: string): Promise<string> {
@@ -50,6 +56,18 @@ function write(socket: Socket, value: unknown): void { socket.write(`${JSON.stri
 async function startCore(rootArg: string, idleMs: number, events: string): Promise<void> {
   if (process.platform === 'win32') throw new Error('F5 IPC experiment supports Unix-domain sockets on Linux/macOS only');
   const p = await paths(rootArg);
+  const ownerLock = new DatabaseSync(p.ownerDb);
+  ownerLock.exec('PRAGMA busy_timeout = 250');
+  try { ownerLock.exec('BEGIN IMMEDIATE'); }
+  catch (error) {
+    if (error instanceof Error && /busy|locked/i.test(error.message)) {
+      event(events, { type: 'core_candidate_reused', pid: process.pid, endpoint: 'owner-lock' });
+      ownerLock.close();
+      process.exit(17);
+    }
+    ownerLock.close();
+    throw error;
+  }
   const db = new DatabaseSync(p.db);
   db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=3000;
     CREATE TABLE IF NOT EXISTS f5_jobs (
@@ -86,9 +104,10 @@ async function startCore(rootArg: string, idleMs: number, events: string): Promi
       closing = true;
       event(events, { type: 'core_idle_stop', pid: process.pid, instanceId });
       socketServer.close(async () => {
+        try { await unlink(p.socket); } catch { /* socket may already have been removed */ }
+        releaseOwnerLock(ownerLock);
         store.close();
         db.close();
-        try { await unlink(p.socket); } catch { /* socket may already have been removed */ }
         process.exit(0);
       });
     }, idleMs);
@@ -143,34 +162,28 @@ async function startCore(rootArg: string, idleMs: number, events: string): Promi
     } finally { active = false; scheduleIdle(); }
   }, catch: (error) => error }));
 
-  // SQLite serializes all bind/recovery contenders. The transaction is short and
-  // kernel-released on crash; no pathname is removed outside this election.
-  db.exec('BEGIN IMMEDIATE');
+  // The separate SQLite owner transaction remains held for the process lifetime.
+  // It serializes all cooperating bind/recovery contenders and is released by
+  // SQLite after a crash without blocking writes to the queue/checkpoint DB.
   try { await listen(socketServer, p.socket); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') {
-      db.exec('ROLLBACK'); db.close(); store.close(); throw error;
+      releaseOwnerLock(ownerLock); db.close(); store.close(); throw error;
     }
     const endpoint = await probeSocket(p.socket, 250);
     if (endpoint !== 'refused') {
       // A connectable endpoint owns the pathname even if its identity response
       // is slow or absent. Unknown probe results are also treated as occupied.
       event(events, { type: 'core_candidate_reused', pid: process.pid, endpoint });
-      db.exec('ROLLBACK'); db.close(); store.close(); process.exit(17);
+      releaseOwnerLock(ownerLock); db.close(); store.close(); process.exit(17);
     }
     try { await unlink(p.socket); }
-    catch { db.exec('ROLLBACK'); db.close(); store.close(); process.exit(17); }
+    catch { releaseOwnerLock(ownerLock); db.close(); store.close(); process.exit(17); }
     try { await listen(socketServer, p.socket); }
     catch (retryError) {
-      db.exec('ROLLBACK'); db.close(); store.close();
+      releaseOwnerLock(ownerLock); db.close(); store.close();
       process.exit((retryError as NodeJS.ErrnoException).code === 'EADDRINUSE' ? 17 : 1);
     }
-  }
-  try { db.exec('COMMIT'); }
-  catch (error) {
-    socketServer.close();
-    try { await unlink(p.socket); } catch { /* cleanup best effort before startup failure */ }
-    db.close(); store.close(); throw error;
   }
   await chmod(p.socket, 0o600);
   // Only the socket owner may recover interrupted work. Losing startup racers
@@ -181,6 +194,11 @@ async function startCore(rootArg: string, idleMs: number, events: string): Promi
   event(events, { type: 'core_start', pid: process.pid, instanceId, root: p.root, socketMode: '0600' });
   void worker();
   scheduleIdle();
+}
+
+function releaseOwnerLock(ownerLock: DatabaseSync): void {
+  try { ownerLock.exec('ROLLBACK'); } catch { /* transaction may already have been released */ }
+  ownerLock.close();
 }
 
 function listen(server: ReturnType<typeof createServer>, path: string): Promise<void> {
