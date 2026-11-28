@@ -4,11 +4,11 @@ Stage 1 provides a local SQLite database for explicitly registered projects, tas
 
 ## Data location
 
-On Linux the default root is `~/.local/share/memories`. `XDG_DATA_HOME` changes this to `$XDG_DATA_HOME/memories`, and `MEMORIES_DATA_DIR` selects an exact root. Every command accepts `--data-dir` as a convenient isolated override. The root is created with mode `0700` on Linux; the database is `memories.sqlite` inside it. One root holds one logical database shared by all registered projects.
+On Linux the default root is `~/.local/share/memories`. `XDG_DATA_HOME` changes this to `$XDG_DATA_HOME/memories`, and `MEMORIES_DATA_DIR` selects an exact root. Every command accepts `--data-dir` as a convenient isolated override. A newly created app-specific root is set to mode `0700`; an existing root is never chmodded. Existing roots must be a directory owned by the current user with no group/other permission bits and owner access to read, write, and traverse, or startup fails with the actual mode in the error. The database is `memories.sqlite` inside it. One root holds one logical knowledge database shared by all registered projects. A small SQLite lock file serializes migrations and contains no project/task/checkpoint records.
 
 ## Commands
 
-Run the local TypeScript CLI with `npm run memories -- <command>`. Commands accept one JSON object from stdin or `--input FILE` (`--input -` also reads stdin), and print a JSON success object to stdout. Errors are JSON objects on stderr and exit nonzero. Run `npm run memories -- --help` for usage.
+Run the local TypeScript CLI with `npm run memories -- <command>`. Commands accept one JSON object from stdin or `--input FILE` (`--input -` also reads stdin), and print a JSON success object to stdout. Input is limited to 128,000 bytes before JSON parsing. Stdin is destroyed at the first oversized chunk; files are checked by size before opening and streamed with a hard byte cap if they grow after the check. Errors are JSON objects on stderr and exit nonzero. Run `npm run memories -- --help` for usage.
 
 ```sh
 export MEMORIES_DATA_DIR="$HOME/.local/share/memories"
@@ -66,6 +66,6 @@ It returns at most 20 checkpoints for that exact project/task, with attribution,
 
 ## Migrations
 
-The SQLite table declarations live in `src/schema.ts`; ordered migrations are checked in under `drizzle/` and recorded in the database migration journal. Migration `0000` creates the minimal project/task/checkpoint schema, composite task ownership constraints, and scoped uniqueness constraints. Migration `0001` adds checkpoint coverage and source provenance with conservative backfill values for existing checkpoints. Each migration and its journal entry commit in one SQLite transaction. Opening a new or existing database applies only pending migrations; reopening is safe.
+The Drizzle schema lives in `src/schema.ts`, configured by `drizzle.config.ts`. Generate migrations with `npm run db:generate`; validate the checked-in journal/snapshots with `npm run db:check`. Generated SQL, `_journal.json`, and schema snapshots live in `drizzle/` and are consumed by Drizzle's SQLite migrator at runtime. Migration `0000` creates the initial identity/scope schema. Migration `0001` adds checkpoint coverage and source provenance with conservative backfill values. Drizzle applies pending migrations and its journal updates in a transaction. A separate small SQLite lock serializes migrator startup because Drizzle reads its journal before opening that transaction. Opening a new or existing database is repeatable.
 
-Validated environment for this Stage 1 work: Linux x86_64, Node.js `v24.22.3`, built-in SQLite `3.54.1`. Other operating systems have not been tested.
+Validated environment for this Stage 1 work: Linux x86_64, Node.js `v24.22.3`, better-sqlite3 `13.2.0`, SQLite `3.54.1`. Other operating systems have not been tested.

@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
-import { statSync } from 'node:fs';
+import Database from 'better-sqlite3';
+import { Readable } from 'node:stream';
 import test from 'node:test';
+import { MAX_INPUT_BYTES, readStructuredInput } from '../src/cli-input.ts';
 import { defaultDataRoot, MemoriesStore } from '../src/storage.ts';
 
 function fixture(): string { return mkdtempSync(join(tmpdir(), 'memories-stage1-')); }
@@ -57,6 +59,60 @@ test('Linux data root defaults to XDG or ~/.local/share and creates a private di
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test('existing unsafe data roots are rejected without changing their permissions', () => {
+  const parent = fixture();
+  const sharedRoot = join(parent, 'shared-root');
+  try {
+    mkdirSync(sharedRoot, { mode: 0o700 });
+    chmodSync(sharedRoot, 0o750);
+    assert.throws(() => new MemoriesStore(sharedRoot), /Data root must be private/);
+    assert.equal(statSync(sharedRoot).mode & 0o777, 0o750);
+  } finally { rmSync(parent, { recursive: true, force: true }); }
+});
+
+test('stdin is destroyed on overflow and oversized files are rejected before reading', async () => {
+  let emittedChunks = 0;
+  const input = new Readable({
+    read() {
+      emittedChunks += 1;
+      this.push(Buffer.alloc(16_384, 0x61));
+    },
+  });
+  await assert.rejects(readStructuredInput('-', input), /exceeds 128000 bytes/);
+  assert.equal(input.destroyed, true);
+  assert.ok(emittedChunks < 20, `read only ${emittedChunks} bounded chunks before closing input`);
+
+  const root = fixture();
+  const oversizedFile = join(root, 'oversized.json');
+  try {
+    writeFileSync(oversizedFile, Buffer.alloc(MAX_INPUT_BYTES + 1));
+    await assert.rejects(readStructuredInput(oversizedFile, Readable.from([])), /exceeds 128000 bytes/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('CLI returns a bounded error for oversized stdin and file inputs without opening a database', () => {
+  const root = fixture();
+  const cli = resolve('src/cli.ts');
+  const dataRoot = join(root, 'data');
+  const oversizedFile = join(root, 'oversized.json');
+  writeFileSync(oversizedFile, Buffer.alloc(MAX_INPUT_BYTES + 1));
+  try {
+    const stdinResult = spawnSync(process.execPath, ['--experimental-strip-types', cli, 'register-project', '--data-dir', dataRoot], {
+      input: Buffer.alloc(MAX_INPUT_BYTES + 1), encoding: 'utf8',
+    });
+    assert.equal(stdinResult.status, 1);
+    assert.match(stdinResult.stderr, /Structured input exceeds 128000 bytes/);
+    assert.equal(stdinResult.stdout, '');
+    assert.equal(existsSync(dataRoot), false);
+
+    const fileResult = spawnSync(process.execPath, ['--experimental-strip-types', cli, 'register-project', '--input', oversizedFile, '--data-dir', dataRoot], { encoding: 'utf8' });
+    assert.equal(fileResult.status, 1);
+    assert.match(fileResult.stderr, /Structured input exceeds 128000 bytes/);
+    assert.equal(fileResult.stdout, '');
+    assert.equal(existsSync(dataRoot), false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test('first write wins per project/task/key while identical keys in another scope stay private', () => {
   const root = fixture();
   try {
@@ -86,11 +142,16 @@ test('first write wins per project/task/key while identical keys in another scop
 test('migration upgrade preserves existing identity and checkpoint rows and is repeatable', () => {
   const root = fixture();
   try {
-    const db = new DatabaseSync(join(root, 'memories.sqlite'));
-    db.exec('PRAGMA foreign_keys=ON');
-    db.exec(readFileSync(resolve('drizzle/0000_initial.sql'), 'utf8'));
-    db.exec('CREATE TABLE __drizzle_migrations (id INTEGER PRIMARY KEY AUTOINCREMENT, hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL)');
-    db.prepare('INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)').run('0000_initial_6e51056', Date.now());
+    const db = new Database(join(root, 'memories.sqlite'));
+    db.pragma('foreign_keys=ON');
+    const initialSql = readFileSync(resolve('drizzle/0000_initial.sql'), 'utf8');
+    db.exec(initialSql);
+    db.exec('CREATE TABLE __drizzle_migrations (id SERIAL PRIMARY KEY, hash text NOT NULL, created_at numeric)');
+    const journal = JSON.parse(readFileSync(resolve('drizzle/meta/_journal.json'), 'utf8')) as { entries: Array<{ tag: string; when: number }> };
+    const initialMigration = journal.entries.find((entry) => entry.tag === '0000_initial');
+    assert.ok(initialMigration);
+    db.prepare('INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)')
+      .run(createHash('sha256').update(initialSql).digest('hex'), initialMigration.when);
     db.prepare('INSERT INTO projects (id, name, git_root, created_at) VALUES (?, ?, ?, ?)').run('p-old', 'Old', null, '2026-01-01T00:00:00.000Z');
     db.prepare('INSERT INTO tasks (id, project_id, objective, created_at) VALUES (?, ?, ?, ?)').run('t-old', 'p-old', 'Keep this task', '2026-01-01T00:00:00.000Z');
     db.prepare(`INSERT INTO checkpoints (id, project_id, task_id, dedupe_key, summary, details, session_agent, session_id, workspace, created_at)
@@ -124,7 +185,7 @@ test('SQLite enforces cross-project task/checkpoint foreign keys and unique regi
     assert.throws(() => store.saveCheckpoint(checkpoint('p2', 't1')), /Unknown task/);
     store.close();
 
-    const db = new DatabaseSync(join(root, 'memories.sqlite'));
+    const db = new Database(join(root, 'memories.sqlite'));
     db.exec('PRAGMA foreign_keys=ON');
     assert.throws(() => db.prepare(`INSERT INTO projects (id, name, git_root, created_at) VALUES ('p3', 'Collision', '/repo/one', 'now')`).run());
     assert.throws(() => db.prepare(`INSERT INTO tasks (id, project_id, objective, created_at) VALUES ('bad-task', 'missing', 'x', 'now')`).run());
@@ -194,5 +255,55 @@ test('concurrent first-run CLI processes serialize migration and retain both reg
     assert.equal(store.registerProject(project('parallel-a')).id, 'parallel-a');
     assert.equal(store.registerProject(project('parallel-b')).id, 'parallel-b');
     store.close();
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('concurrent CLI task and checkpoint retries return the same durable records', async () => {
+  const root = fixture();
+  const cli = resolve('src/cli.ts');
+  const run = (command: string, input: unknown) => new Promise<{ code: number | null; stdout: string; stderr: string }>((resolvePromise, reject) => {
+    const child = spawn(process.execPath, ['--experimental-strip-types', cli, command, '--data-dir', root], { stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+    child.once('error', reject);
+    child.once('close', (code) => resolvePromise({ code, stdout, stderr }));
+    child.stdin.end(JSON.stringify(input));
+  });
+  const resultOf = (result: { code: number | null; stdout: string; stderr: string }) => {
+    assert.equal(result.code, 0, result.stderr);
+    return (JSON.parse(result.stdout) as { result: Record<string, unknown> }).result;
+  };
+  try {
+    const registrations = await Promise.all([
+      run('register-project', project('concurrent-project')),
+      run('register-project', project('concurrent-project')),
+    ]);
+    const registered = registrations.map(resultOf);
+    assert.equal(registered[0]?.id, registered[1]?.id);
+
+    const taskResults = await Promise.all([
+      run('task-create', task('concurrent-project', 'task-race-a', 'One shared objective')),
+      run('task-create', task('concurrent-project', 'task-race-b', 'One shared objective')),
+    ]);
+    const createdTasks = taskResults.map(resultOf);
+    assert.equal(createdTasks[0]?.id, createdTasks[1]?.id);
+
+    const taskId = String(createdTasks[0]?.id);
+    const savedResults = await Promise.all([
+      run('checkpoint-save', checkpoint('concurrent-project', taskId, 'same-key', 'payload A')),
+      run('checkpoint-save', checkpoint('concurrent-project', taskId, 'same-key', 'payload B')),
+    ]);
+    const saved = savedResults.map(resultOf);
+    assert.equal(saved[0]?.id, saved[1]?.id);
+    assert.equal(saved[0]?.summary, saved[1]?.summary);
+    assert.ok(saved[0]?.summary === 'payload A' || saved[0]?.summary === 'payload B');
+
+    const loadResult = await run('task-load', { projectId: 'concurrent-project', taskId });
+    const packet = resultOf(loadResult) as { checkpoints: Array<{ id: string; summary: string }> };
+    assert.equal(packet.checkpoints.length, 1);
+    assert.equal(packet.checkpoints[0]?.id, saved[0]?.id);
+    assert.equal(packet.checkpoints[0]?.summary, saved[0]?.summary);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

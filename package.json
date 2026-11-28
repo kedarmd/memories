@@ -11,16 +11,21 @@
     "check": "tsc --noEmit",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
     "memories": "node --experimental-strip-types src/cli.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:check": "drizzle-kit check",
     "spike:f5": "node --experimental-strip-types --test-reporter=spec --test tests/runtime-f5.test.ts",
     "build": "tsc --project tsconfig.build.json"
   },
   "dependencies": {
+    "better-sqlite3": "^13.2.0",
+    "drizzle-orm": "^0.45.4",
     "effect": "^3.0.0",
-    "drizzle-orm": "^0.44.0",
     "zod": "^4.0.0"
   },
   "devDependencies": {
-    "typescript": "^5.9.0",
-    "@types/node": "^22.0.0"
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^22.0.0",
+    "drizzle-kit": "^0.31.11",
+    "typescript": "^5.9.0"
   }
 }

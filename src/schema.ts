@@ -1,4 +1,4 @@
-import { foreignKey, index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { foreignKey, index, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 export const projects = sqliteTable('projects', {
   id: text('id').primaryKey(),
@@ -29,8 +29,8 @@ export const checkpoints = sqliteTable('checkpoints', {
   sessionAgent: text('session_agent').notNull(),
   sessionId: text('session_id'),
   workspace: text('workspace').notNull(),
-  coverage: text('coverage').notNull(),
-  sources: text('sources').notNull(),
+  coverage: text('coverage').notNull().default('{"status":"unknown","notes":"Migration backfill; coverage was not recorded."}'),
+  sources: text('sources').notNull().default('[]'),
   createdAt: text('created_at').notNull(),
 }, (table) => [
   uniqueIndex('checkpoints_scope_dedupe_unique').on(table.projectId, table.taskId, table.dedupeKey),
@@ -38,8 +38,3 @@ export const checkpoints = sqliteTable('checkpoints', {
   index('checkpoints_scope_created_index').on(table.projectId, table.taskId, table.createdAt),
   foreignKey({ columns: [table.projectId, table.taskId], foreignColumns: [tasks.projectId, tasks.id], name: 'checkpoints_task_project_fk' }).onDelete('cascade'),
 ]);
-export const migrationJournal = sqliteTable('__drizzle_migrations', {
-  id: integer('id').primaryKey({ autoIncrement: true }),
-  hash: text('hash').notNull(),
-  createdAt: integer('created_at').notNull(),
-});

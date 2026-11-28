@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { readFileSync } from 'node:fs';
 import { stdin, stdout, stderr } from 'node:process';
 import { Effect } from 'effect';
+import { readStructuredInput } from './cli-input.ts';
 import { MemoriesStore, defaultDataRoot } from './storage.ts';
 
 const help = `Memories Stage 1 CLI — migration-backed, explicitly scoped local persistence
@@ -15,7 +15,7 @@ Commands:
   checkpoint-save    Save an attributed checkpoint (returns status: saved after commit)
   task-load          Load a bounded packet for an explicit project and task
 
-Structured JSON is read from --input FILE or stdin. Each command accepts one JSON object.
+Structured JSON is read from --input FILE or stdin and is limited to 128,000 bytes. Each command accepts one JSON object.
 Set MEMORIES_DATA_DIR (or XDG_DATA_HOME) to choose an isolated data root.
 Linux default: ~/.local/share/memories; the data directory is created with mode 0700.
 
@@ -46,22 +46,6 @@ function parseArgs(args: string[]): ParsedArgs {
   return { command, ...(inputFile === undefined ? {} : { inputFile }), ...(dataDir === undefined ? {} : { dataDir }) };
 }
 
-async function readInput(file?: string): Promise<unknown> {
-  const content = file === undefined || file === '-' ? await new Promise<string>((resolve, reject) => {
-    let data = '';
-    stdin.setEncoding('utf8');
-    stdin.on('data', (chunk: string) => {
-      data += chunk;
-      if (data.length > 128_000) reject(new Error('Structured input exceeds 128 KB'));
-    });
-    stdin.on('end', () => resolve(data));
-    stdin.on('error', reject);
-  }) : readFileSync(file, 'utf8');
-  if (content.length > 128_000) throw new Error('Structured input exceeds 128 KB');
-  try { return JSON.parse(content) as unknown; }
-  catch { throw new Error('Input must be one valid JSON object'); }
-}
-
 async function run(): Promise<void> {
   let store: MemoriesStore | undefined;
   try {
@@ -70,7 +54,10 @@ async function run(): Promise<void> {
       stdout.write(help);
       return;
     }
-    const input = await readInput(args.inputFile);
+    if (!['register-project', 'task-create', 'checkpoint-save', 'task-load'].includes(args.command)) {
+      throw new Error(`Unknown command: ${args.command}. Run memories --help for usage.`);
+    }
+    const input = await readStructuredInput(args.inputFile, stdin);
     store = new MemoriesStore(args.dataDir ?? defaultDataRoot());
     const result = Effect.runSync(Effect.try({
       try: () => {
@@ -89,7 +76,8 @@ async function run(): Promise<void> {
     const message = error instanceof Error ? error.message : String(error);
     const code = message.includes('Unknown project') || message.includes('Unknown task') ? 'scope_error' :
       message.includes('already exists') || message.includes('already in use') ? 'conflict' :
-      message.startsWith('[') || message.includes('validation') || message.includes('Invalid input') ? 'invalid_input' : 'error';
+      message.startsWith('[') || message.includes('validation') || message.includes('Invalid input') ||
+        message.startsWith('Structured input') || message.startsWith('Input must') ? 'invalid_input' : 'error';
     stderr.write(`${JSON.stringify({ ok: false, error: { code, message } })}\n`);
     process.exitCode = 1;
   } finally {

@@ -1,10 +1,13 @@
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdirSync, readFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DatabaseSync } from 'node:sqlite';
+import Database from 'better-sqlite3';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { z } from 'zod';
+import * as schema from './schema.ts';
 
 export const MAX_SUMMARY_LENGTH = 2_000;
 export const MAX_DETAILS_LENGTH = 20_000;
@@ -79,51 +82,65 @@ export function defaultDataRoot(env: NodeJS.ProcessEnv = process.env): string {
 export class MemoriesStore {
   readonly dataRoot: string;
   readonly databasePath: string;
-  readonly #db: DatabaseSync;
+  readonly #db: Database.Database;
 
   constructor(dataRoot = defaultDataRoot()) {
     this.dataRoot = resolve(dataRoot);
-    mkdirSync(this.dataRoot, { recursive: true, mode: 0o700 });
-    if (process.platform !== 'win32') chmodSync(this.dataRoot, 0o700);
+    mkdirSync(dirname(this.dataRoot), { recursive: true });
+    let created = false;
+    try {
+      mkdirSync(this.dataRoot, { mode: 0o700 });
+      created = true;
+    } catch (error) {
+      if (!(error instanceof Error) || !('code' in error) || error.code !== 'EEXIST') throw error;
+    }
+    if (process.platform !== 'win32') {
+      if (created) chmodSync(this.dataRoot, 0o700);
+      const info = statSync(this.dataRoot);
+      if (!info.isDirectory()) throw new Error(`Data root must be a directory: ${this.dataRoot}`);
+      const currentUid = process.getuid?.();
+      if (currentUid !== undefined && info.uid !== currentUid) throw new Error(`Data root must be owned by the current user: ${this.dataRoot}`);
+      const mode = info.mode & 0o777;
+      if ((mode & 0o077) !== 0 || (mode & 0o700) !== 0o700) {
+        throw new Error(`Data root must be private (mode 0700 or stricter): ${this.dataRoot} currently has mode ${mode.toString(8).padStart(3, '0')}`);
+      }
+    }
     this.databasePath = join(this.dataRoot, 'memories.sqlite');
-    this.#db = new DatabaseSync(this.databasePath);
-    this.#db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
-    this.migrate();
+    this.#db = new Database(this.databasePath);
+    try {
+      this.#db.pragma('busy_timeout = 10000');
+      this.#db.pragma('foreign_keys = ON');
+      this.#db.pragma('journal_mode = WAL');
+      this.migrate();
+    }
+    catch (error) { this.#db.close(); throw error; }
   }
 
   close(): void { this.#db.close(); }
 
   migrate(): void {
-    this.#db.exec(`CREATE TABLE IF NOT EXISTS __drizzle_migrations (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      hash TEXT NOT NULL UNIQUE,
-      created_at INTEGER NOT NULL
-    )`);
-    const migrationDirectory = fileURLToPath(new URL('../drizzle/', import.meta.url));
-    const migrations = [
-      { hash: '0000_initial_6e51056', file: '0000_initial.sql' },
-      { hash: '0001_checkpoint_provenance_2e8ef30', file: '0001_checkpoint_provenance.sql' },
-    ].map((migration) => ({ ...migration, sql: readFileSync(join(migrationDirectory, migration.file), 'utf8') }));
-    for (const migration of migrations) {
-      this.#db.exec('BEGIN IMMEDIATE');
-      try {
-        const applied = this.#db.prepare('SELECT hash FROM __drizzle_migrations WHERE hash = ?').get(migration.hash);
-        if (applied) {
-          this.#db.exec('COMMIT');
-          continue;
-        }
-        this.#db.exec(migration.sql);
-        this.#db.prepare('INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)').run(migration.hash, Date.now());
-        this.#db.exec('COMMIT');
-      } catch (error) {
-        this.#db.exec('ROLLBACK');
-        throw error;
-      }
+    const migrationsFolder = fileURLToPath(new URL('../drizzle/', import.meta.url));
+    const lock = new Database(`${this.databasePath}.migration-lock`);
+    lock.pragma('busy_timeout = 10000');
+    let locked = false;
+    try {
+      lock.exec('BEGIN IMMEDIATE');
+      locked = true;
+      migrate(drizzle(this.#db, { schema }), { migrationsFolder });
+      lock.exec('COMMIT');
+      locked = false;
+    } catch (error) {
+      if (locked) lock.exec('ROLLBACK');
+      throw error;
+    } finally {
+      lock.close();
     }
   }
 
   registerProject(raw: unknown): ProjectRecord {
     const input = registerProjectInput.parse(raw);
+    this.#db.prepare(`INSERT INTO projects (id, name, git_root, created_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT DO NOTHING`).run(input.id, input.name, input.gitRoot ?? null, timestamp());
     const existing = this.#db.prepare('SELECT * FROM projects WHERE id = ?').get(input.id) as SqlRow | undefined;
     if (existing) {
       if (existing.name !== input.name || existing.git_root !== (input.gitRoot ?? null)) throw new Error(`Project ID ${input.id} already exists with different registration data`);
@@ -133,20 +150,20 @@ export class MemoriesStore {
       ? this.#db.prepare('SELECT id FROM projects WHERE git_root = ?').get(input.gitRoot) as SqlRow | undefined
       : undefined;
     if (rootMatch) throw new Error(`Git root is already associated with project ID ${String(rootMatch.id)}; use that project ID to reuse it`);
-    this.#db.prepare('INSERT INTO projects (id, name, git_root, created_at) VALUES (?, ?, ?, ?)').run(input.id, input.name, input.gitRoot ?? null, timestamp());
-    return this.#projectFromRow(this.#db.prepare('SELECT * FROM projects WHERE id = ?').get(input.id) as SqlRow);
+    throw new Error(`Project registration conflicted with an existing identity${input.gitRoot ? ` or root hint ${input.gitRoot}` : ''}`);
   }
 
   createTask(raw: unknown): TaskRecord {
     const input = createTaskInput.parse(raw);
     const project = this.#db.prepare('SELECT id FROM projects WHERE id = ?').get(input.projectId);
     if (!project) throw new Error(`Unknown project: ${input.projectId}`);
+    this.#db.prepare(`INSERT INTO tasks (id, project_id, objective, created_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT DO NOTHING`).run(input.id, input.projectId, input.objective, timestamp());
     const existing = this.#db.prepare('SELECT * FROM tasks WHERE project_id = ? AND objective = ?').get(input.projectId, input.objective) as SqlRow | undefined;
     if (existing) return this.#taskFromRow(existing);
     const idUsed = this.#db.prepare('SELECT project_id FROM tasks WHERE id = ?').get(input.id) as SqlRow | undefined;
     if (idUsed) throw new Error(`Task ID ${input.id} is already in use`);
-    this.#db.prepare('INSERT INTO tasks (id, project_id, objective, created_at) VALUES (?, ?, ?, ?)').run(input.id, input.projectId, input.objective, timestamp());
-    return this.#taskFromRow(this.#db.prepare('SELECT * FROM tasks WHERE id = ? AND project_id = ?').get(input.id, input.projectId) as SqlRow);
+    throw new Error(`Task creation conflicted with an existing record for project ${input.projectId}`);
   }
 
   saveCheckpoint(raw: unknown): CheckpointRecord {
@@ -159,7 +176,8 @@ export class MemoriesStore {
     const checkpointId = `cp_${createHash('sha256').update(`${input.projectId}\0${input.taskId}\0${input.dedupeKey}`).digest('hex').slice(0, 24)}`;
     this.#db.prepare(`INSERT INTO checkpoints
       (id, project_id, task_id, dedupe_key, status, summary, details, session_agent, session_id, workspace, coverage, sources, created_at)
-      VALUES (?, ?, ?, ?, 'saved', ?, ?, ?, ?, ?, ?, ?, ?)`)
+      VALUES (?, ?, ?, ?, 'saved', ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT DO NOTHING`)
       .run(checkpointId, input.projectId, input.taskId, input.dedupeKey, input.summary, input.details, input.sessionAgent,
         input.sessionId ?? null, input.workspace, JSON.stringify(input.coverage), JSON.stringify(input.sources.map((source) => ({ ...source, verification: 'unverified' }))), timestamp());
     const row = this.#db.prepare('SELECT * FROM checkpoints WHERE project_id = ? AND task_id = ? AND dedupe_key = ?')
