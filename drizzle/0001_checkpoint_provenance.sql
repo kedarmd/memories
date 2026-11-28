@@ -1,0 +1,2 @@
+ALTER TABLE `checkpoints` ADD `coverage` text DEFAULT '{"status":"unknown","notes":"Migration backfill; coverage was not recorded."}' NOT NULL;--> statement-breakpoint
+ALTER TABLE `checkpoints` ADD `sources` text DEFAULT '[]' NOT NULL;
